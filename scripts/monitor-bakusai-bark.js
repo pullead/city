@@ -6,7 +6,7 @@ const {
   DEFAULT_THREAD_ID,
   DEFAULT_THREAD_TITLE,
   DEFAULT_THREAD_URL,
-  buildBarkPayload,
+  buildBarkPayloads,
   buildDailySummaries,
   buildPageUrl,
   createNotificationPlan,
@@ -69,6 +69,7 @@ async function main() {
   const notifyOnFirstRun = envFlag('BARK_NOTIFY_ON_FIRST_RUN', false);
   const notifyHistoryWhenNoNew = envFlag('BARK_NOTIFY_HISTORY_WHEN_NO_NEW', true);
   const translateToChinese = envFlag('BARK_TRANSLATE_TO_ZH', true);
+  const barkMaxBodyChars = envInt('BARK_MAX_BODY_CHARS', 3000);
 
   const posts = await fetchPosts(threadUrl, maxPages);
   if (posts.length === 0) {
@@ -91,15 +92,18 @@ async function main() {
     const notificationPosts = translateToChinese
       ? await translatePostsToChinese(plan.notificationPosts)
       : plan.notificationPosts;
-    const payload = buildBarkPayload({
+    const payloads = buildBarkPayloads({
       threadTitle,
       threadUrl,
       newPosts: notificationPosts,
       notificationKind: plan.notificationKind,
       dailySummaries,
+      maxBodyChars: barkMaxBodyChars,
     });
-    await sendBarkNotification(process.env.BARK_API_URL, payload);
-    console.log('[bark] notification sent');
+    for (let i = 0; i < payloads.length; i++) {
+      await sendBarkNotification(process.env.BARK_API_URL, payloads[i]);
+      console.log(`[bark] notification sent (${i + 1}/${payloads.length})`);
+    }
   } else if (plan.firstRun) {
     console.log('[bark] first run baseline created; no posts pushed');
   } else {

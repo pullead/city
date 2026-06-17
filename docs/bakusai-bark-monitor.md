@@ -40,9 +40,11 @@ The workflow fetches enough pages to cover the four-day window:
 BAKUSAI_MAX_PAGES: '30'
 BARK_TRANSLATE_TO_ZH: 'true'
 BARK_ENFORCE_PUSH_HOURS: 'true'
+BARK_MAX_BODY_CHARS: '3000'
 ```
 
 Pushes are sent hourly from 07:00 through 23:00 Japan time. Outside that window, the workflow exits without sending Bark notifications.
+Large four-day digests are split into multiple Bark notifications to avoid request-size limits.
 
 ## Local Run
 

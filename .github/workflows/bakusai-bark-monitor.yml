@@ -42,6 +42,7 @@ jobs:
           BARK_NOTIFY_HISTORY_WHEN_NO_NEW: 'true'
           BARK_TRANSLATE_TO_ZH: 'true'
           BARK_ENFORCE_PUSH_HOURS: 'true'
+          BARK_MAX_BODY_CHARS: '3000'
 
       - name: Commit monitor state
         run: |

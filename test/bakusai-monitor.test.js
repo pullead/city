@@ -3,6 +3,7 @@ const test = require('node:test');
 
 const {
   buildBarkPayload,
+  buildBarkPayloads,
   buildDailySummaries,
   buildPageUrl,
   createNotificationPlan,
@@ -225,6 +226,34 @@ test('buildBarkPayload adds a daily Japanese summary followed by Chinese transla
     payload.body,
     /📝 まとめ \/ 摘要\nこの日は料金についての投稿が目立ちました。接客に関する感想も出ています。全体として情報交換が続いています。\n这一天关于价格的帖子比较明显。也出现了关于接客的感想。整体上讨论仍在继续。[\s\S]*🧾 #101/,
   );
+});
+
+test('buildBarkPayloads splits large four-day digests into smaller Bark requests', () => {
+  const posts = Array.from({ length: 40 }, (_, index) => ({
+    num: index + 1,
+    time: '2026/06/17 10:00',
+    content: `日本語本文 ${index + 1} ${'あ'.repeat(80)}`,
+    contentZh: `中文正文 ${index + 1} ${'中'.repeat(80)}`,
+  }));
+
+  const payloads = buildBarkPayloads({
+    threadTitle: 'Bakusai 13315868',
+    threadUrl: 'https://bakusai.com/thr_res/acode=18/ctgid=103/bid=436/tid=13315868/tp=1/',
+    now: new Date('2026-06-17T03:00:00Z'),
+    newPosts: posts,
+    maxBodyChars: 1800,
+    dailySummaries: {
+      '2026-06-17': {
+        ja: 'この日は投稿数が多く、複数の話題が続いています。',
+        zh: '这一天帖子数量较多，多个话题持续出现。',
+      },
+    },
+  });
+
+  assert.ok(payloads.length > 1);
+  assert.ok(payloads.every(payload => payload.body.length <= 1800));
+  assert.match(payloads[0].title, /\(1\/\d+\)$/);
+  assert.match(payloads.at(-1).body, /#40/);
 });
 
 test('buildDailySummaries creates translated summaries for each recent day', async () => {

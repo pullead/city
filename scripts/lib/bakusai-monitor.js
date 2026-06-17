@@ -10,6 +10,7 @@ const DEFAULT_THREAD_TITLE = 'Bakusai monitor';
 const DEFAULT_STATE_PATH = path.resolve(__dirname, '..', '..', '.crawler-state', 'bakusai-monitor.json');
 const DEFAULT_NOTIFICATION_POST_LIMIT = 20;
 const DEFAULT_DAY_WINDOW = 4;
+const DEFAULT_BARK_BODY_CHAR_LIMIT = 3000;
 const DAY_LABELS = [
   { ja: '今日', zh: '今天' },
   { ja: '昨日', zh: '昨天' },
@@ -318,6 +319,50 @@ function buildBarkPayload({ threadTitle, threadUrl, newPosts, notificationKind =
   };
 }
 
+function buildBarkPayloads(options = {}) {
+  const maxBodyChars = options.maxBodyChars || DEFAULT_BARK_BODY_CHAR_LIMIT;
+  const posts = selectRecentDayPosts(options.newPosts || [], options);
+
+  if (posts.length === 0) {
+    return [buildBarkPayload(options)];
+  }
+
+  const payloads = [];
+  let currentPosts = [];
+
+  for (const post of posts) {
+    const candidatePosts = [...currentPosts, post];
+    const candidatePayload = buildBarkPayload({
+      ...options,
+      newPosts: candidatePosts,
+    });
+
+    if (currentPosts.length > 0 && candidatePayload.body.length > maxBodyChars) {
+      payloads.push(buildBarkPayload({
+        ...options,
+        newPosts: currentPosts,
+      }));
+      currentPosts = [post];
+    } else {
+      currentPosts = candidatePosts;
+    }
+  }
+
+  if (currentPosts.length > 0) {
+    payloads.push(buildBarkPayload({
+      ...options,
+      newPosts: currentPosts,
+    }));
+  }
+
+  if (payloads.length <= 1) return payloads;
+
+  return payloads.map((payload, index) => ({
+    ...payload,
+    title: `${payload.title} (${index + 1}/${payloads.length})`,
+  }));
+}
+
 function parseGoogleTranslateResponse(payload) {
   if (!Array.isArray(payload) || !Array.isArray(payload[0])) return '';
   return payload[0]
@@ -400,6 +445,7 @@ module.exports = {
   DEFAULT_THREAD_URL,
   DEFAULT_NOTIFICATION_POST_LIMIT,
   buildBarkPayload,
+  buildBarkPayloads,
   buildDailySummaries,
   buildPageUrl,
   createNotificationPlan,
