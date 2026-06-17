@@ -1,22 +1,23 @@
-# Bakusai Bark Monitor
+# Bakusai Telegram Monitor
 
-This repository includes a GitHub Actions workflow that monitors this Bakusai thread once per hour:
+This repository includes a GitHub Actions workflow that monitors this Bakusai thread once per hour and pushes updates to Telegram:
 
 ```text
 https://bakusai.com/thr_res/acode=18/ctgid=103/bid=436/tid=13315868/tp=1/#tab=0
 ```
 
-## Bark Secret
+## Telegram Secrets
 
-Do not commit the Bark device key or full Bark API URL into the repository.
+Do not commit the Telegram bot token or chat ID into the repository.
 
-Create a GitHub Actions repository secret named `BARK_API_URL` with this value:
+Create these GitHub Actions repository secrets:
 
 ```text
-https://api.day.app/<your-bark-key>
+TELEGRAM_BOT_TOKEN=<your-bot-token>
+TELEGRAM_CHAT_ID=<your-chat-id>
 ```
 
-The workflow reads that secret and sends one Bark notification on every run.
+The workflow reads those secrets and sends Telegram messages when it runs.
 
 When new Bakusai posts are found, the notification contains all posts from today, yesterday, two days ago, and three days ago, in that order. When there are no new posts, the workflow still sends all posts from the same four-day window.
 
@@ -38,17 +39,17 @@ The workflow fetches enough pages to cover the four-day window:
 
 ```text
 BAKUSAI_MAX_PAGES: '30'
-BARK_TRANSLATE_TO_ZH: 'true'
-BARK_ENFORCE_PUSH_HOURS: 'true'
-BARK_MAX_BODY_CHARS: '3000'
+TG_TRANSLATE_TO_ZH: 'true'
+TG_ENFORCE_PUSH_HOURS: 'true'
+TG_MAX_MESSAGE_CHARS: '3500'
 ```
 
-Pushes are sent hourly from 07:00 through 23:00 Japan time. Outside that window, the workflow exits without sending Bark notifications.
-Large four-day digests are split into multiple Bark notifications to avoid request-size limits.
+Pushes are sent hourly from 07:00 through 23:00 Japan time. Outside that window, the workflow exits without sending Telegram messages.
+Large four-day digests are split into multiple Telegram messages to avoid Telegram's message length limit.
 
 ## Local Run
 
 ```bash
 npm ci
-BARK_API_URL="https://api.day.app/<your-bark-key>" npm run bakusai:bark
+TELEGRAM_BOT_TOKEN="<your-bot-token>" TELEGRAM_CHAT_ID="<your-chat-id>" npm run bakusai:tg
 ```

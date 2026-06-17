@@ -1,4 +1,4 @@
-name: Bakusai Bark Monitor
+name: Bakusai Telegram Monitor
 
 on:
   schedule:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: bakusai-bark-monitor
+  group: bakusai-telegram-monitor
   cancel-in-progress: false
 
 jobs:
@@ -31,18 +31,19 @@ jobs:
       - name: Run tests
         run: npm test
 
-      - name: Run Bakusai Bark monitor
-        run: npm run bakusai:bark
+      - name: Run Bakusai Telegram monitor
+        run: npm run bakusai:tg
         env:
-          BARK_API_URL: ${{ secrets.BARK_API_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           BAKUSAI_THREAD_URL: https://bakusai.com/thr_res/acode=18/ctgid=103/bid=436/tid=13315868/tp=1/#tab=0
           BAKUSAI_THREAD_ID: '13315868'
           BAKUSAI_THREAD_TITLE: Bakusai 13315868
           BAKUSAI_MAX_PAGES: '30'
-          BARK_NOTIFY_HISTORY_WHEN_NO_NEW: 'true'
-          BARK_TRANSLATE_TO_ZH: 'true'
-          BARK_ENFORCE_PUSH_HOURS: 'true'
-          BARK_MAX_BODY_CHARS: '3000'
+          TG_NOTIFY_HISTORY_WHEN_NO_NEW: 'true'
+          TG_TRANSLATE_TO_ZH: 'true'
+          TG_ENFORCE_PUSH_HOURS: 'true'
+          TG_MAX_MESSAGE_CHARS: '3500'
 
       - name: Commit monitor state
         run: |

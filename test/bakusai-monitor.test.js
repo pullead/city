@@ -6,8 +6,12 @@ const {
   buildBarkPayloads,
   buildDailySummaries,
   buildPageUrl,
+  buildTelegramMessages,
   createNotificationPlan,
   isWithinPushHours,
+  jsonByteLength,
+  sendTelegramMessage,
+  splitTelegramText,
   translatePostsToChinese,
   normalizeBarkEndpoint,
   parsePosts,
@@ -254,6 +258,94 @@ test('buildBarkPayloads splits large four-day digests into smaller Bark requests
   assert.ok(payloads.every(payload => payload.body.length <= 1800));
   assert.match(payloads[0].title, /\(1\/\d+\)$/);
   assert.match(payloads.at(-1).body, /#40/);
+});
+
+test('buildBarkPayloads respects the full UTF-8 Bark request byte budget', () => {
+  const posts = Array.from({ length: 12 }, (_, index) => ({
+    num: index + 1,
+    time: '2026/06/17 10:00',
+    content: `日本語本文 ${index + 1} ${'あいうえお'.repeat(30)}`,
+    contentZh: `中文正文 ${index + 1} ${'这是中文内容'.repeat(30)}`,
+  }));
+
+  const payloads = buildBarkPayloads({
+    threadTitle: 'Bakusai 13315868',
+    threadUrl: 'https://bakusai.com/thr_res/acode=18/ctgid=103/bid=436/tid=13315868/tp=1/',
+    now: new Date('2026-06-17T03:00:00Z'),
+    newPosts: posts,
+    maxBodyChars: 3000,
+    maxRequestBytes: 1800,
+    dailySummaries: {
+      '2026-06-17': {
+        ja: 'この日は投稿数が多く、複数の話題が続いています。'.repeat(6),
+        zh: '这一天帖子数量较多，多个话题持续出现。'.repeat(6),
+      },
+    },
+  });
+
+  assert.ok(payloads.length > 1);
+  assert.ok(payloads.every(payload => jsonByteLength(payload) <= 1800));
+});
+
+test('buildBarkPayloads compresses a single oversized post instead of producing an oversized request', () => {
+  const payloads = buildBarkPayloads({
+    threadTitle: 'Bakusai 13315868',
+    threadUrl: 'https://bakusai.com/thr_res/acode=18/ctgid=103/bid=436/tid=13315868/tp=1/',
+    now: new Date('2026-06-17T03:00:00Z'),
+    newPosts: [
+      {
+        num: 999,
+        time: '2026/06/17 10:00',
+        content: 'あ'.repeat(2000),
+        contentZh: '中'.repeat(2000),
+      },
+    ],
+    maxBodyChars: 3000,
+    maxRequestBytes: 1200,
+  });
+
+  assert.equal(payloads.length, 1);
+  assert.ok(jsonByteLength(payloads[0]) <= 1200);
+  assert.match(payloads[0].body, /#999/);
+  assert.doesNotMatch(payloads[0].body, new RegExp('あ'.repeat(200)));
+});
+
+test('buildTelegramMessages splits messages under the Telegram character limit', () => {
+  const messages = buildTelegramMessages({
+    threadTitle: 'Bakusai 13315868',
+    threadUrl: 'https://bakusai.com/thr_res/acode=18/ctgid=103/bid=436/tid=13315868/tp=1/',
+    now: new Date('2026-06-17T03:00:00Z'),
+    newPosts: Array.from({ length: 10 }, (_, index) => ({
+      num: index + 1,
+      time: '2026/06/17 10:00',
+      content: `日本語本文 ${index + 1} ${'あ'.repeat(100)}`,
+      contentZh: `中文正文 ${index + 1} ${'中'.repeat(100)}`,
+    })),
+    maxMessageChars: 900,
+  });
+
+  assert.ok(messages.length > 1);
+  assert.ok(messages.every(message => message.length <= 900));
+  assert.match(messages[0], /^\[1\/\d+\]/);
+});
+
+test('splitTelegramText keeps short text as one message and splits long text', () => {
+  assert.deepEqual(splitTelegramText('short', 10), ['short']);
+  const chunks = splitTelegramText('aa\n\nbb\n\ncc', 6);
+  assert.ok(chunks.length > 1);
+  assert.ok(chunks.every(chunk => chunk.length <= 6));
+  assert.equal(chunks.join('\n\n'), 'aa\n\nbb\n\ncc');
+});
+
+test('sendTelegramMessage validates required Telegram secrets', async () => {
+  await assert.rejects(
+    () => sendTelegramMessage('', '123', 'hello'),
+    /TELEGRAM_BOT_TOKEN is required/,
+  );
+  await assert.rejects(
+    () => sendTelegramMessage('token', '', 'hello'),
+    /TELEGRAM_CHAT_ID is required/,
+  );
 });
 
 test('buildDailySummaries creates translated summaries for each recent day', async () => {

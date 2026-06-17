@@ -11,6 +11,10 @@ const DEFAULT_STATE_PATH = path.resolve(__dirname, '..', '..', '.crawler-state',
 const DEFAULT_NOTIFICATION_POST_LIMIT = 20;
 const DEFAULT_DAY_WINDOW = 4;
 const DEFAULT_BARK_BODY_CHAR_LIMIT = 3000;
+const DEFAULT_BARK_REQUEST_BYTE_LIMIT = 3800;
+const DEFAULT_SPLIT_POST_CHAR_LIMIT = 120;
+const DEFAULT_SPLIT_SUMMARY_CHAR_LIMIT = 140;
+const DEFAULT_TELEGRAM_MESSAGE_CHAR_LIMIT = 3500;
 const DAY_LABELS = [
   { ja: '今日', zh: '今天' },
   { ja: '昨日', zh: '昨天' },
@@ -267,7 +271,68 @@ function truncate(text, maxLength) {
   return `${value.slice(0, maxLength - 3)}...`;
 }
 
-function buildBarkPayload({ threadTitle, threadUrl, newPosts, notificationKind = 'new', now, timeZone = 'Asia/Tokyo', dailySummaries = {} }) {
+function jsonByteLength(value) {
+  return Buffer.byteLength(JSON.stringify(value), 'utf8');
+}
+
+function truncateUtf8(text, maxBytes) {
+  const value = String(text || '');
+  if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
+  if (maxBytes <= 3) return '...'.slice(0, maxBytes);
+
+  let output = '';
+  let used = 0;
+  for (const char of value) {
+    const charBytes = Buffer.byteLength(char, 'utf8');
+    if (used + charBytes > maxBytes - 3) break;
+    output += char;
+    used += charBytes;
+  }
+  return `${output}...`;
+}
+
+function clampPayloadToByteLimit(payload, maxRequestBytes) {
+  if (!Number.isFinite(maxRequestBytes) || maxRequestBytes <= 0) return payload;
+  if (jsonByteLength(payload) <= maxRequestBytes) return payload;
+
+  const marker = '\n\n（内容过长，已自动压缩。请点开通知查看原帖。）';
+  const payloadWithoutBody = { ...payload, body: '' };
+  const fixedBytes = jsonByteLength(payloadWithoutBody);
+  const markerBytes = Buffer.byteLength(marker, 'utf8');
+  const availableBodyBytes = maxRequestBytes - fixedBytes - markerBytes - 16;
+
+  return {
+    ...payload,
+    body: availableBodyBytes > 0
+      ? `${truncateUtf8(payload.body, availableBodyBytes)}${marker}`
+      : '内容过长，已自动压缩。请点开通知查看原帖。',
+  };
+}
+
+function clampPayloadToLimits(payload, maxBodyChars, maxRequestBytes) {
+  let nextPayload = payload;
+  if (Number.isFinite(maxBodyChars) && maxBodyChars > 0 && nextPayload.body.length > maxBodyChars) {
+    nextPayload = {
+      ...nextPayload,
+      body: truncate(nextPayload.body, maxBodyChars),
+    };
+  }
+  return clampPayloadToByteLimit(nextPayload, maxRequestBytes);
+}
+
+function buildBarkPayload({
+  threadTitle,
+  threadUrl,
+  newPosts,
+  notificationKind = 'new',
+  now,
+  timeZone = 'Asia/Tokyo',
+  dailySummaries = {},
+  includeEmptyDays = true,
+  includeDailySummaries = true,
+  maxPostChars = 180,
+  maxSummaryChars = Infinity,
+}) {
   const buckets = getRecentDayBuckets({ now, timeZone });
   const posts = selectRecentDayPosts(newPosts || [], { now, timeZone });
   const postsByDate = new Map();
@@ -285,16 +350,20 @@ function buildBarkPayload({ threadTitle, threadUrl, newPosts, notificationKind =
 
   for (const bucket of buckets) {
     const dayPosts = postsByDate.get(bucket.key) || [];
+    if (!includeEmptyDays && dayPosts.length === 0) continue;
+
     lines.push(`📅 ${bucket.ja} / ${bucket.zh} ${bucket.key}`);
     lines.push('━━━━━━━━━━━━');
-    const summary = dailySummaries[bucket.key] || {
-      ja: buildDailySummaryJa(dayPosts, bucket),
-      zh: '（中文摘要不可用）',
-    };
-    lines.push('📝 まとめ / 摘要');
-    lines.push(summary.ja);
-    lines.push(summary.zh);
-    lines.push('');
+    if (includeDailySummaries) {
+      const summary = dailySummaries[bucket.key] || {
+        ja: buildDailySummaryJa(dayPosts, bucket),
+        zh: '（中文摘要不可用）',
+      };
+      lines.push('📝 まとめ / 摘要');
+      lines.push(truncate(summary.ja, maxSummaryChars));
+      lines.push(truncate(summary.zh, maxSummaryChars));
+      lines.push('');
+    }
     if (dayPosts.length === 0) {
       lines.push('投稿なし');
       lines.push('无帖子');
@@ -302,8 +371,8 @@ function buildBarkPayload({ threadTitle, threadUrl, newPosts, notificationKind =
       dayPosts.forEach((post, index) => {
         if (index > 0) lines.push('');
         lines.push(`🧾 #${post.num} · ${parsePostTimeLabel(post.time)}`);
-        lines.push(truncate(post.content, 180));
-        lines.push(truncate(post.contentZh || '（中文翻译不可用）', 180));
+        lines.push(truncate(post.content, maxPostChars));
+        lines.push(truncate(post.contentZh || '（中文翻译不可用）', maxPostChars));
       });
     }
     lines.push('');
@@ -321,27 +390,47 @@ function buildBarkPayload({ threadTitle, threadUrl, newPosts, notificationKind =
 
 function buildBarkPayloads(options = {}) {
   const maxBodyChars = options.maxBodyChars || DEFAULT_BARK_BODY_CHAR_LIMIT;
+  const maxRequestBytes = options.maxRequestBytes || DEFAULT_BARK_REQUEST_BYTE_LIMIT;
   const posts = selectRecentDayPosts(options.newPosts || [], options);
 
   if (posts.length === 0) {
-    return [buildBarkPayload(options)];
+    return [clampPayloadToLimits(buildBarkPayload(options), maxBodyChars, maxRequestBytes)];
   }
 
   const payloads = [];
   let currentPosts = [];
 
+  const makeSplitPayload = (chunkPosts, compactness = 0) => {
+    const postLimit = compactness >= 2 ? 40 : compactness >= 1 ? 80 : (options.maxPostChars || DEFAULT_SPLIT_POST_CHAR_LIMIT);
+    const summaryLimit = compactness >= 1 ? 80 : (options.maxSummaryChars || DEFAULT_SPLIT_SUMMARY_CHAR_LIMIT);
+    return buildBarkPayload({
+      ...options,
+      newPosts: chunkPosts,
+      includeEmptyDays: false,
+      maxPostChars: postLimit,
+      maxSummaryChars: summaryLimit,
+    });
+  };
+
+  const fits = payload => (
+    payload.body.length <= maxBodyChars
+    && jsonByteLength(payload) <= maxRequestBytes
+  );
+
+  const fitPayload = (chunkPosts) => {
+    for (const compactness of [0, 1, 2]) {
+      const payload = makeSplitPayload(chunkPosts, compactness);
+      if (fits(payload)) return payload;
+    }
+    return clampPayloadToLimits(makeSplitPayload(chunkPosts, 2), maxBodyChars, maxRequestBytes);
+  };
+
   for (const post of posts) {
     const candidatePosts = [...currentPosts, post];
-    const candidatePayload = buildBarkPayload({
-      ...options,
-      newPosts: candidatePosts,
-    });
+    const candidatePayload = makeSplitPayload(candidatePosts);
 
-    if (currentPosts.length > 0 && candidatePayload.body.length > maxBodyChars) {
-      payloads.push(buildBarkPayload({
-        ...options,
-        newPosts: currentPosts,
-      }));
+    if (currentPosts.length > 0 && !fits(candidatePayload)) {
+      payloads.push(fitPayload(currentPosts));
       currentPosts = [post];
     } else {
       currentPosts = candidatePosts;
@@ -349,18 +438,67 @@ function buildBarkPayloads(options = {}) {
   }
 
   if (currentPosts.length > 0) {
-    payloads.push(buildBarkPayload({
-      ...options,
-      newPosts: currentPosts,
-    }));
+    payloads.push(fitPayload(currentPosts));
   }
 
   if (payloads.length <= 1) return payloads;
 
-  return payloads.map((payload, index) => ({
+  return payloads.map((payload, index) => clampPayloadToLimits({
     ...payload,
     title: `${payload.title} (${index + 1}/${payloads.length})`,
-  }));
+  }, maxBodyChars, maxRequestBytes));
+}
+
+function splitTelegramText(text, maxChars = DEFAULT_TELEGRAM_MESSAGE_CHAR_LIMIT) {
+  const value = String(text || '').trim();
+  const limit = Math.max(1, maxChars);
+  if (!value) return [];
+  if (value.length <= limit) return [value];
+
+  const chunks = [];
+  let remaining = value;
+  while (remaining.length > limit) {
+    let splitAt = remaining.lastIndexOf('\n\n', limit);
+    if (splitAt < Math.floor(limit * 0.5)) {
+      splitAt = remaining.lastIndexOf('\n', limit);
+    }
+    if (splitAt < Math.floor(limit * 0.5)) splitAt = limit;
+    chunks.push(remaining.slice(0, splitAt).trim());
+    remaining = remaining.slice(splitAt).trim();
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
+function buildTelegramMessages(options = {}) {
+  const maxChars = options.maxMessageChars || DEFAULT_TELEGRAM_MESSAGE_CHAR_LIMIT;
+  const payloads = buildBarkPayloads({
+    ...options,
+    maxBodyChars: Math.max(500, maxChars - 300),
+    maxRequestBytes: Number.MAX_SAFE_INTEGER,
+  });
+  const messages = [];
+
+  for (const payload of payloads) {
+    const text = [
+      payload.title,
+      '',
+      payload.body,
+      '',
+      payload.url,
+    ].filter(line => line !== '').join('\n');
+    messages.push(...splitTelegramText(text, maxChars));
+  }
+
+  if (messages.length <= 1) return messages;
+
+  const numberedMessages = [];
+  for (let index = 0; index < messages.length; index++) {
+    const prefix = `[${index + 1}/${messages.length}]\n`;
+    const chunks = splitTelegramText(messages[index], Math.max(1, maxChars - prefix.length));
+    for (const chunk of chunks) numberedMessages.push(`${prefix}${chunk}`);
+  }
+  return numberedMessages;
 }
 
 function parseGoogleTranslateResponse(payload) {
@@ -428,6 +566,30 @@ async function sendBarkNotification(endpoint, payload) {
   return response.json().catch(() => ({}));
 }
 
+async function sendTelegramMessage(botToken, chatId, text, options = {}) {
+  const token = String(botToken || '').trim();
+  const targetChatId = String(chatId || '').trim();
+  if (!token) throw new Error('TELEGRAM_BOT_TOKEN is required when posts are found.');
+  if (!targetChatId) throw new Error('TELEGRAM_CHAT_ID is required when posts are found.');
+
+  const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: targetChatId,
+      text,
+      disable_web_page_preview: options.disableWebPagePreview ?? false,
+    }),
+  });
+
+  if (!response.ok) {
+    const responseText = await response.text().catch(() => '');
+    throw new Error(`Telegram push failed: HTTP ${response.status} ${responseText}`.trim());
+  }
+
+  return response.json().catch(() => ({}));
+}
+
 function loadState(statePath = DEFAULT_STATE_PATH) {
   if (!fs.existsSync(statePath)) return null;
   return JSON.parse(fs.readFileSync(statePath, 'utf8'));
@@ -444,10 +606,14 @@ module.exports = {
   DEFAULT_THREAD_TITLE,
   DEFAULT_THREAD_URL,
   DEFAULT_NOTIFICATION_POST_LIMIT,
+  DEFAULT_BARK_REQUEST_BYTE_LIMIT,
+  DEFAULT_TELEGRAM_MESSAGE_CHAR_LIMIT,
   buildBarkPayload,
   buildBarkPayloads,
   buildDailySummaries,
   buildPageUrl,
+  buildTelegramMessages,
+  jsonByteLength,
   createNotificationPlan,
   isWithinPushHours,
   loadState,
@@ -455,6 +621,8 @@ module.exports = {
   parsePosts,
   saveState,
   sendBarkNotification,
+  sendTelegramMessage,
+  splitTelegramText,
   translatePostsToChinese,
   translateTextJaToZh,
 };

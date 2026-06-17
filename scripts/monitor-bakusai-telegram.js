@@ -6,16 +6,15 @@ const {
   DEFAULT_THREAD_ID,
   DEFAULT_THREAD_TITLE,
   DEFAULT_THREAD_URL,
-  buildBarkPayloads,
   buildDailySummaries,
   buildPageUrl,
+  buildTelegramMessages,
   createNotificationPlan,
   isWithinPushHours,
-  jsonByteLength,
   loadState,
   parsePosts,
   saveState,
-  sendBarkNotification,
+  sendTelegramMessage,
   translatePostsToChinese,
 } = require('./lib/bakusai-monitor');
 const { fetchText } = require('./lib/http-fetch');
@@ -56,9 +55,9 @@ async function fetchPosts(threadUrl, maxPages) {
 }
 
 async function main() {
-  const enforcePushHours = envFlag('BARK_ENFORCE_PUSH_HOURS', true);
+  const enforcePushHours = envFlag('TG_ENFORCE_PUSH_HOURS', true);
   if (enforcePushHours && !isWithinPushHours(new Date())) {
-    console.log('[bark] outside push hours in Asia/Tokyo; skipping silently');
+    console.log('[tg] outside push hours in Asia/Tokyo; skipping silently');
     return;
   }
 
@@ -67,11 +66,10 @@ async function main() {
   const threadTitle = process.env.BAKUSAI_THREAD_TITLE || DEFAULT_THREAD_TITLE;
   const statePath = process.env.BAKUSAI_STATE_PATH || DEFAULT_STATE_PATH;
   const maxPages = envInt('BAKUSAI_MAX_PAGES', 30);
-  const notifyOnFirstRun = envFlag('BARK_NOTIFY_ON_FIRST_RUN', false);
-  const notifyHistoryWhenNoNew = envFlag('BARK_NOTIFY_HISTORY_WHEN_NO_NEW', true);
-  const translateToChinese = envFlag('BARK_TRANSLATE_TO_ZH', true);
-  const barkMaxBodyChars = envInt('BARK_MAX_BODY_CHARS', 3000);
-  const barkMaxRequestBytes = envInt('BARK_MAX_REQUEST_BYTES', 3800);
+  const notifyOnFirstRun = envFlag('TG_NOTIFY_ON_FIRST_RUN', false);
+  const notifyHistoryWhenNoNew = envFlag('TG_NOTIFY_HISTORY_WHEN_NO_NEW', true);
+  const translateToChinese = envFlag('TG_TRANSLATE_TO_ZH', true);
+  const maxMessageChars = envInt('TG_MAX_MESSAGE_CHARS', 3500);
 
   const posts = await fetchPosts(threadUrl, maxPages);
   if (posts.length === 0) {
@@ -94,24 +92,28 @@ async function main() {
     const notificationPosts = translateToChinese
       ? await translatePostsToChinese(plan.notificationPosts)
       : plan.notificationPosts;
-    const payloads = buildBarkPayloads({
+    const messages = buildTelegramMessages({
       threadTitle,
       threadUrl,
       newPosts: notificationPosts,
       notificationKind: plan.notificationKind,
       dailySummaries,
-      maxBodyChars: barkMaxBodyChars,
-      maxRequestBytes: barkMaxRequestBytes,
+      maxMessageChars,
     });
-    for (let i = 0; i < payloads.length; i++) {
-      console.log(`[bark] sending notification ${i + 1}/${payloads.length}: bodyChars=${payloads[i].body.length} requestBytes=${jsonByteLength(payloads[i])}`);
-      await sendBarkNotification(process.env.BARK_API_URL, payloads[i]);
-      console.log(`[bark] notification sent (${i + 1}/${payloads.length})`);
+
+    for (let i = 0; i < messages.length; i++) {
+      console.log(`[tg] sending message ${i + 1}/${messages.length}: chars=${messages[i].length}`);
+      await sendTelegramMessage(
+        process.env.TELEGRAM_BOT_TOKEN,
+        process.env.TELEGRAM_CHAT_ID,
+        messages[i],
+      );
+      console.log(`[tg] message sent (${i + 1}/${messages.length})`);
     }
   } else if (plan.firstRun) {
-    console.log('[bark] first run baseline created; no posts pushed');
+    console.log('[tg] first run baseline created; no posts pushed');
   } else {
-    console.log('[bark] no new posts');
+    console.log('[tg] no new posts');
   }
 
   saveState(plan.nextState, statePath);
