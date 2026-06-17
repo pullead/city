@@ -10,6 +10,7 @@ const {
   splitTelegramText,
   translateTextJaToZh,
 } = require('./bakusai-monitor');
+const { searchResponses } = require('./bakusai');
 const { normalizeForSearch } = require('./normalize-ja');
 
 const UA_PC = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
@@ -27,6 +28,10 @@ const GIRLS = [
       'https://bakusai.com/thr_res/acode=7/ctgid=103/bid=410/tid=12867698/ttgid=105/p=1/',
       'https://bakusai.com/thr_res/acode=7/ctgid=103/bid=1227/tid=10030739/p=1/',
     ],
+    searchBoards: [
+      { areaCode: '7', boardId: '410' },
+      { areaCode: '7', boardId: '1227' },
+    ],
     keywords: ['井上キキ', 'キキ', 'きき'],
   },
   {
@@ -35,6 +40,9 @@ const GIRLS = [
     diaryUrl: 'https://www.cityheaven.net/hyogo/A2801/A280102/kobe-duma/girlid-36454537/diary/?lo=1#menus',
     bakusaiUrls: [
       'https://bakusai.com/thr_res/acode=18/ctgid=103/bid=436/tid=13281329/',
+    ],
+    searchBoards: [
+      { areaCode: '18', boardId: '436' },
     ],
     keywords: ['清水あさひ', 'あさひ', 'アサヒ'],
   },
@@ -46,6 +54,10 @@ const GIRLS = [
     bakusaiUrls: [
       'https://bakusai.com/thr_tl/acode=18/ctgid=103/bid=436/',
       'https://bakusai.com/thr_tl/acode=18/ctgid=103/bid=239/',
+    ],
+    searchBoards: [
+      { areaCode: '18', boardId: '436' },
+      { areaCode: '18', boardId: '239' },
     ],
     keywords: ['渋谷りなの', 'りなの', 'リナノ'],
   },
@@ -66,6 +78,34 @@ function truncate(text, maxLength) {
   const value = cleanText(text);
   if (value.length <= maxLength) return value;
   return `${value.slice(0, maxLength - 3)}...`;
+}
+
+function dateKeyInTokyo(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Tokyo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function parseMonthDayDateKey(text, now = new Date()) {
+  const value = String(text || '');
+  const full = value.match(/(\d{4})[\/年.-](\d{1,2})[\/月.-](\d{1,2})/);
+  if (full) return `${full[1]}-${String(full[2]).padStart(2, '0')}-${String(full[3]).padStart(2, '0')}`;
+  const short = value.match(/(\d{1,2})[\/月.-](\d{1,2})/);
+  if (!short) return '';
+  return `${dateKeyInTokyo(now).slice(0, 4)}-${String(short[1]).padStart(2, '0')}-${String(short[2]).padStart(2, '0')}`;
+}
+
+function isCurrentMonthDate(dateKey, now = new Date()) {
+  return Boolean(dateKey && dateKey.slice(0, 7) === dateKeyInTokyo(now).slice(0, 7));
+}
+
+function isTodayDate(dateKey, now = new Date()) {
+  return Boolean(dateKey && dateKey === dateKeyInTokyo(now));
 }
 
 function absoluteUrl(url, base = 'https://www.cityheaven.net') {
@@ -124,10 +164,12 @@ function parseReservation(html) {
   return rows.slice(0, 8);
 }
 
-function parseDiaries(html, pageUrl) {
+function parseDiaries(html, pageUrl, options = {}) {
   const $ = cheerio.load(html || '');
   const diaries = [];
   const seen = new Set();
+  const limit = options.limit || 20;
+  const now = options.now || new Date();
 
   $('.diary_item, li[class*="diary"], article[class*="diary"], a[href*="/diary/pd-"]').each((_, el) => {
     const item = $(el);
@@ -147,10 +189,150 @@ function parseDiaries(html, pageUrl) {
     if (/^(写メ日記|日記|詳細|リンク)$/i.test(title)) return;
     if (/JavaScript|display:\s*none|noScriptArea|写メ日記はありません/i.test(`${title} ${snippet}`)) return;
     seen.add(key);
-    diaries.push({ title: truncate(title, 60), date: truncate(date, 24), snippet: truncate(snippet, 100), url });
+    diaries.push({
+      title: truncate(title, 80),
+      date: truncate(date, 30),
+      dateKey: parseMonthDayDateKey(date, now),
+      snippet: truncate(snippet, 180),
+      url,
+      imageUrls: item.find('img').map((_, img) => absoluteUrl($(img).attr('src') || $(img).attr('data-src') || '', pageUrl)).get().filter(Boolean).slice(0, 3),
+      videoUrls: item.find('video source, video').map((_, video) => absoluteUrl($(video).attr('src') || '', pageUrl)).get().filter(Boolean).slice(0, 2),
+    });
   });
 
-  return diaries.slice(0, 3);
+  return diaries.slice(0, limit);
+}
+
+function parseDiaryNextPage(html, pageUrl) {
+  const $ = cheerio.load(html || '');
+  let href = $('link[rel="next"]').attr('href')
+    || $('a[rel="next"]').attr('href')
+    || $('a').filter((_, el) => /次|次へ|next/i.test(cleanText($(el).text()))).first().attr('href')
+    || '';
+  if (!href) return '';
+  return absoluteUrl(href, pageUrl);
+}
+
+function parseDiaryDetail(html, pageUrl, base = {}) {
+  const $ = cheerio.load(html || '');
+  $('script, style, noscript, iframe, header, footer, nav').remove();
+  const rawTitle = cleanText($('h1, .diary_title, .diary_headding, [class*="title"]').first().text());
+  const title = rawTitle && !/^(新着通知|写メ日記|日記|詳細)$/i.test(rawTitle) ? rawTitle : (base.title || rawTitle || '');
+  const date = cleanText($('time, .diary_time, [class*="date"], [class*="time"]').first().text()) || base.date || '';
+  const body = cleanText($('.diary_detail, .diary_body, .diary_text, .diary_post, article, main').first().text()) || base.snippet || '';
+  const imageUrls = $('img').map((_, img) => absoluteUrl($(img).attr('src') || $(img).attr('data-src') || '', pageUrl)).get()
+    .filter(url => url && !/logo|banner|icon|loading|dummy|shlg|\/shop\/[a-z]\//i.test(url))
+    .slice(0, 2);
+  const videoUrls = $('video source, video, a[href*=".mp4"], a[href*=".mov"], a[href*=".m3u8"]').map((_, video) => absoluteUrl($(video).attr('src') || $(video).attr('href') || '', pageUrl)).get()
+    .filter(Boolean)
+    .slice(0, 1);
+
+  return {
+    ...base,
+    title: truncate(title, 80),
+    date: truncate(date, 30),
+    dateKey: parseMonthDayDateKey(date || base.date),
+    snippet: truncate(body, 220),
+    body: truncate(body, 360),
+    imageUrls: [...new Set([...(base.imageUrls || []), ...imageUrls])].filter(url => !/logo|banner|icon|loading|dummy|shlg|\/shop\/[a-z]\//i.test(url)).slice(0, 2),
+    videoUrls: [...new Set([...(base.videoUrls || []), ...videoUrls])].slice(0, 1),
+    url: pageUrl || base.url,
+  };
+}
+
+function diaryPageCandidates(startUrl, page) {
+  if (page <= 1) return [startUrl];
+  const clean = String(startUrl || '').split('#')[0];
+  const withoutQuery = clean.split('?')[0].replace(/\/+$/, '');
+  return [
+    `${withoutQuery}/${page}/`,
+    `${withoutQuery}/p=${page}/`,
+    `${clean}${clean.includes('?') ? '&' : '?'}page=${page}`,
+  ];
+}
+
+async function collectMonthlyDiaries(girl, options = {}) {
+  if (!girl.diaryUrl) return [];
+  const now = options.now || new Date();
+  const maxPages = options.maxPages || 4;
+  const maxDetails = options.maxDetails || 20;
+  const entries = [];
+  const seenUrls = new Set();
+  let nextUrl = girl.diaryUrl;
+
+  for (let page = 1; page <= maxPages; page++) {
+    const urls = nextUrl ? [nextUrl] : diaryPageCandidates(girl.diaryUrl, page);
+    let html = '';
+    let pageUrl = '';
+    for (const candidate of urls) {
+      try {
+        html = await fetchHtml(candidate, { ua: UA_SP });
+        pageUrl = candidate;
+        break;
+      } catch (_) {
+        // try next candidate
+      }
+    }
+    if (!html) break;
+
+    const diaries = parseDiaries(html, pageUrl, { now, limit: 30 });
+    for (const diary of diaries) {
+      if (!diary.url || seenUrls.has(diary.url)) continue;
+      if (diary.dateKey && !isCurrentMonthDate(diary.dateKey, now)) continue;
+      seenUrls.add(diary.url);
+      entries.push(diary);
+    }
+    nextUrl = parseDiaryNextPage(html, pageUrl);
+    if (!nextUrl && diaries.length === 0) break;
+    if (entries.length >= maxDetails) break;
+    await sleep(400);
+  }
+
+  const detailed = [];
+  for (const diary of entries.slice(0, maxDetails)) {
+    try {
+      const html = await fetchHtml(diary.url, { ua: UA_SP });
+      detailed.push(parseDiaryDetail(html, diary.url, diary));
+    } catch (_) {
+      detailed.push(diary);
+    }
+    await sleep(250);
+  }
+
+  return detailed
+    .filter(diary => !diary.dateKey || isCurrentMonthDate(diary.dateKey, now))
+    .sort((a, b) => String(b.dateKey || '').localeCompare(String(a.dateKey || '')));
+}
+
+function extractScheduleFromDiaries(diaries, options = {}) {
+  const now = options.now || new Date();
+  const rows = [];
+  const seen = new Set();
+  const schedulePattern = /(出勤|予約|空き|空枠|追加枠|受付|シフト|出勤表|予定|ご案内|満了|完売|休み|キャンセル|枠|\d{1,2}:\d{2}|\d{1,2}時)/;
+  const datePattern = /(\d{1,2}[\/月.-]\d{1,2}(?:日)?|\d{1,2}日|\d{1,2}:\d{2}|\d{1,2}時(?:\d{1,2}分)?)/g;
+
+  for (const diary of diaries || []) {
+    const sourceDate = diary.dateKey || parseMonthDayDateKey(diary.date, now);
+    const chunks = String(`${diary.title || ''}\n${diary.snippet || ''}\n${diary.body || ''}`)
+      .split(/[。！？!?\n]/)
+      .map(cleanText)
+      .filter(line => line.length >= 3 && line.length <= 140 && schedulePattern.test(line));
+    for (const line of chunks) {
+      const dateHints = [...line.matchAll(datePattern)].map(match => match[0]).slice(0, 4);
+      const key = `${sourceDate}|${line}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push({
+        date: sourceDate || dateHints[0] || '',
+        time: dateHints.join(' / '),
+        detail: truncate(line, 90),
+        sourceTitle: diary.title,
+        sourceUrl: diary.url,
+      });
+    }
+  }
+
+  return rows.slice(0, 10);
 }
 
 function parseReviews(html, pageUrl, girl) {
@@ -170,17 +352,81 @@ function parseReviews(html, pageUrl, girl) {
     const text = cleanText(item.text());
     if (!text || !matchesGirl(text, girl)) return;
     const href = item.find('a[href*="/reviews/"]').first().attr('href') || '';
-    const title = cleanText(item.find('.review-item-title, [class*="title"]').first().text()) || '口コミ';
+    const title = normalizeReviewTitle(cleanText(item.find('.review-item-title, [class*="title"]').first().text()) || '口コミ');
     const rating = cleanText(item.find('.total_rate, [class*="rate"]').first().text());
-    const comment = cleanText(item.find('.review-item-post, [class*="post"]').first().text()) || text;
+    const comment = cleanText(
+      item.find('.review-item-post').not('[class*="date"]').first().text()
+      || item.find('[class*="post"]').not('[class*="date"]').first().text(),
+    ) || text;
+    const date = cleanText(item.find('.review-item-post-date, time, [class*="date"]').first().text());
     const url = absoluteUrl(href, pageUrl);
     const key = `${title}|${comment.slice(0, 40)}`;
     if (seen.has(key)) return;
     seen.add(key);
-    reviews.push({ title: truncate(title, 50), rating, comment: truncate(comment, 120), url });
+    reviews.push({
+      title: truncate(title, 50),
+      rating,
+      comment: truncate(comment, 220),
+      date,
+      dateKey: parseMonthDayDateKey(date),
+      url,
+    });
   });
 
-  return reviews.slice(0, 2);
+  return reviews.slice(0, 10);
+}
+
+function normalizeReviewTitle(title) {
+  return cleanText(title)
+    .replace(/遊んだ女の子.+?プロフィールを見る/g, '')
+    .replace(/T\d+･[^★]+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim() || '口コミ';
+}
+
+function isWithinDays(dateKey, days, now = new Date()) {
+  if (!dateKey) return false;
+  const date = new Date(`${dateKey}T00:00:00+09:00`);
+  const today = new Date(`${dateKeyInTokyo(now)}T00:00:00+09:00`);
+  return today - date >= 0 && today - date <= days * 86400000;
+}
+
+async function collectWeeklyReviews(girl, options = {}) {
+  if (!girl.reviewsUrl) return [];
+  const now = options.now || new Date();
+  const maxPages = options.maxPages || 2;
+  const reviews = [];
+  const seen = new Set();
+
+  for (let page = 1; page <= maxPages; page++) {
+    const url = page === 1
+      ? girl.reviewsUrl
+      : `${girl.reviewsUrl.split('#')[0].split('?')[0].replace(/\/+$/, '')}/${page}/`;
+    try {
+      const html = await fetchHtml(url, { ua: UA_PC });
+      for (const review of parseReviews(html, url, girl)) {
+        const key = `${review.title}|${review.comment.slice(0, 50)}`;
+        if (seen.has(key)) continue;
+        if (review.dateKey && !isWithinDays(review.dateKey, 7, now)) continue;
+        seen.add(key);
+        reviews.push(review);
+      }
+    } catch (_) {
+      break;
+    }
+    await sleep(300);
+  }
+
+  const selected = reviews.slice(0, 5);
+  return translateItems(selected, ['comment']);
+}
+
+function summarizeReviews(reviews) {
+  if (!reviews || reviews.length === 0) return [];
+  return reviews.slice(0, 3).map(review => ({
+    ...review,
+    summary: truncate(review.commentZh || review.comment, 70),
+  }));
 }
 
 function parseThreadLinks(html, pageUrl, girl) {
@@ -205,7 +451,6 @@ function parseThreadLinks(html, pageUrl, girl) {
 function filterBakusaiPosts(posts, girl, sourceTitle = '') {
   return (posts || [])
     .filter(post => matchesGirl(`${post.content} ${sourceTitle}`, girl))
-    .slice(-5)
     .map(post => ({
       num: post.num,
       time: post.time,
@@ -216,7 +461,8 @@ function filterBakusaiPosts(posts, girl, sourceTitle = '') {
 
 async function collectBakusaiMentions(girl, options = {}) {
   const mentions = [];
-  const maxPages = options.maxPages || 2;
+  const maxPages = options.maxPages || 4;
+  const minMentions = options.minMentions || 10;
 
   for (const url of girl.bakusaiUrls || []) {
     try {
@@ -234,6 +480,7 @@ async function collectBakusaiMentions(girl, options = {}) {
           const posts = parsePosts(html);
           mentions.push(...filterBakusaiPosts(posts, girl));
           if (posts.length === 0) break;
+          if (mentions.length >= minMentions) break;
           await sleep(300);
         }
       }
@@ -243,13 +490,88 @@ async function collectBakusaiMentions(girl, options = {}) {
     await sleep(500);
   }
 
+  if (mentions.filter(item => !item.error).length < minMentions) {
+    mentions.push(...await searchBakusaiResponsesForGirl(girl, {
+      minMentions,
+      existingCount: mentions.filter(item => !item.error).length,
+    }));
+  }
+
+  if (mentions.filter(item => !item.error).length < minMentions) {
+    mentions.push(...await searchWebForBakusaiMentions(girl, {
+      minMentions,
+      existingCount: mentions.filter(item => !item.error).length,
+    }));
+  }
+
   const seen = new Set();
   return mentions.filter(item => {
-    const key = `${item.num}|${item.content}|${item.error}`;
+    const key = `${item.time}|${item.num}|${item.content}|${item.error}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
-  }).slice(0, 6);
+  }).slice(0, minMentions);
+}
+
+async function searchBakusaiResponsesForGirl(girl, options = {}) {
+  const results = [];
+  const targetCount = Math.max(0, (options.minMentions || 10) - (options.existingCount || 0));
+  if (targetCount <= 0) return results;
+
+  for (const board of girl.searchBoards || []) {
+    for (const keyword of girl.keywords || [girl.name]) {
+      try {
+        const hits = await searchResponses({
+          areaCode: board.areaCode,
+          boardId: board.boardId,
+          keyword,
+          maxPages: 2,
+        });
+        for (const hit of hits) {
+          if (!matchesGirl(hit.body, girl)) continue;
+          results.push({
+            num: null,
+            time: hit.date,
+            content: truncate(hit.body, 140),
+            urlTitle: `${hit.board_label || '爆さい検索'} ${hit.thread_title || ''}`,
+          });
+          if (results.length >= targetCount) return results;
+        }
+      } catch (_) {
+        // Continue with the next board/keyword and then web fallback.
+      }
+      await sleep(300);
+    }
+  }
+  return results;
+}
+
+async function searchWebForBakusaiMentions(girl, options = {}) {
+  const results = [];
+  const targetCount = Math.max(0, (options.minMentions || 10) - (options.existingCount || 0));
+  if (targetCount <= 0) return results;
+
+  const query = encodeURIComponent(`site:bakusai.com ${girl.name} 爆サイ`);
+  try {
+    const html = await fetchHtml(`https://duckduckgo.com/html/?q=${query}`, {
+      ua: UA_PC,
+      timeout: 20000,
+      retries: 0,
+    });
+    const links = parseThreadLinks(html, 'https://duckduckgo.com/html/', girl)
+      .filter(link => /bakusai\.com/.test(link.url))
+      .slice(0, 4);
+    for (const link of links) {
+      const threadHtml = await fetchHtml(buildPageUrl(link.url, 1), { ua: UA_PC });
+      results.push(...filterBakusaiPosts(parsePosts(threadHtml), girl, link.title));
+      if (results.length >= targetCount) break;
+      await sleep(300);
+    }
+  } catch (_) {
+    // Public search is a best-effort fallback only.
+  }
+
+  return results.slice(0, targetCount);
 }
 
 async function translateItems(items, fields) {
@@ -275,6 +597,7 @@ async function collectGirlDigest(girl) {
     girl,
     profile: [],
     reservation: [],
+    diarySchedule: [],
     diaries: [],
     reviews: [],
     bakusai: [],
@@ -297,8 +620,11 @@ async function collectGirlDigest(girl) {
 
   try {
     if (girl.diaryUrl) {
-      const diaries = parseDiaries(await fetchHtml(girl.diaryUrl, { ua: UA_SP }), girl.diaryUrl);
-      result.diaries = await translateItems(diaries, ['title', 'snippet']);
+      const monthlyDiaries = await collectMonthlyDiaries(girl);
+      result.diarySchedule = extractScheduleFromDiaries(monthlyDiaries);
+      const todayDiaries = monthlyDiaries.filter(diary => isTodayDate(diary.dateKey));
+      const displayDiaries = todayDiaries.length > 0 ? todayDiaries : monthlyDiaries.slice(0, 3);
+      result.diaries = await translateItems(displayDiaries.slice(0, 3), ['title', 'snippet']);
     }
   } catch (error) {
     result.warnings.push(`写メ日記取得失败: ${error.message}`);
@@ -306,8 +632,7 @@ async function collectGirlDigest(girl) {
 
   try {
     if (girl.reviewsUrl) {
-      const reviews = parseReviews(await fetchHtml(girl.reviewsUrl, { ua: UA_PC }), girl.reviewsUrl, girl);
-      result.reviews = await translateItems(reviews, ['comment']);
+      result.reviews = summarizeReviews(await collectWeeklyReviews(girl));
     }
   } catch (error) {
     result.warnings.push(`口コミ取得失败: ${error.message}`);
@@ -333,29 +658,40 @@ function formatGirlSection(digest) {
     for (const item of digest.profile.slice(0, 4)) lines.push(`  - ${item}`);
   }
 
-  lines.push('🗓 出勤/预约');
+  lines.push('🗓 日记提取出勤表');
+  if (digest.diarySchedule && digest.diarySchedule.length) {
+    for (const row of digest.diarySchedule.slice(0, 5)) {
+      lines.push(`  - ${row.date || '日期不明'}｜${row.time || '时间未提取'}｜${truncate(row.detail, 54)}`);
+    }
+  } else {
+    lines.push('  - 当月日记里暂未提取到明确出勤/预约内容');
+  }
+
+  lines.push('📅 官方预约页');
   for (const item of lineList(digest.reservation, '暂无可解析的出勤/预约信息')) {
     lines.push(`  - ${truncate(item, 90)}`);
   }
 
-  lines.push('📝 写メ日記');
-  for (const diary of digest.diaries.length ? digest.diaries : [{ title: '暂无新日记' }]) {
+  lines.push('📝 今日/最新写メ日記');
+  for (const diary of digest.diaries.length ? digest.diaries : [{ title: '暂无当天或当月日记' }]) {
     lines.push(`  - ${diary.date ? `${diary.date} ` : ''}${diary.title}`);
     if (diary.titleZh) lines.push(`    🔵 ${truncate(diary.titleZh, 70)}`);
-    if (diary.snippet) lines.push(`    🇯🇵 ${truncate(diary.snippet, 90)}`);
-    if (diary.snippetZh) lines.push(`    🔵 ${truncate(diary.snippetZh, 90)}`);
+    if (diary.snippet) lines.push(`    🇯🇵 ${truncate(diary.snippet, 70)}`);
+    if (diary.snippetZh) lines.push(`    🔵 ${truncate(diary.snippetZh, 70)}`);
+    if (diary.imageUrls && diary.imageUrls.length) lines.push(`    📷 ${diary.imageUrls[0]}`);
+    if (diary.videoUrls && diary.videoUrls.length) lines.push(`    🎬 ${diary.videoUrls[0]}`);
   }
 
   if (girl.reviewsUrl) {
-    lines.push('⭐ CityHeaven 口コミ');
-    for (const review of digest.reviews.length ? digest.reviews : [{ title: '暂无匹配口コミ' }]) {
-      lines.push(`  - ${review.rating ? `★${review.rating} ` : ''}${review.title}`);
-      if (review.comment) lines.push(`    🇯🇵 ${truncate(review.comment, 100)}`);
-      if (review.commentZh) lines.push(`    🔵 ${truncate(review.commentZh, 100)}`);
+    lines.push('⭐ 近一周口コミ总结');
+    for (const review of digest.reviews.length ? digest.reviews : [{ title: '近一周暂无匹配口コミ' }]) {
+      lines.push(`  - ${review.date ? `${review.date} ` : ''}${review.rating ? `★${review.rating} ` : ''}${review.title}`);
+      if (review.summary) lines.push(`    🔵 客人大概说：${truncate(review.summary, 80)}`);
+      else if (review.comment) lines.push(`    🇯🇵 ${truncate(review.comment, 80)}`);
     }
   }
 
-  lines.push('💬 爆さい提及');
+  lines.push('💬 爆さい相关提及（最新尽量10条）');
   if (!digest.bakusai.length) {
     lines.push('  - 暂无匹配提及');
   }
@@ -366,8 +702,8 @@ function formatGirlSection(digest) {
     }
     lines.push(`  - ${mention.num ? `#${mention.num} ` : ''}${mention.time || ''}`);
     if (mention.urlTitle) lines.push(`    ${mention.urlTitle}`);
-    lines.push(`    🇯🇵 ${truncate(mention.content, 110)}`);
-    if (mention.contentZh) lines.push(`    🔵 ${truncate(mention.contentZh, 110)}`);
+    lines.push(`    🇯🇵 ${truncate(mention.content, 72)}`);
+    if (mention.contentZh) lines.push(`    🔵 ${truncate(mention.contentZh, 72)}`);
   }
 
   if (digest.warnings.length) {
@@ -391,7 +727,7 @@ function buildGirlsDigestMessage(digests, options = {}) {
 
   return [
     `🌸 女孩每日关注｜${timeText} JST`,
-    '出勤/预约・写メ日記・口コミ・爆さい提及',
+    '当月日记出勤表・今日日记媒体・一周口コミ・爆さい提及',
     '',
     ...(digests || []).map(formatGirlSection).flatMap((section, index) => (
       index === 0 ? [section] : ['━━━━━━━━━━━━', section]
@@ -400,7 +736,29 @@ function buildGirlsDigestMessage(digests, options = {}) {
 }
 
 function splitGirlsDigestMessage(message, maxChars = 3500) {
-  return splitTelegramText(message, maxChars);
+  const value = String(message || '').trim();
+  if (value.length <= maxChars) return value ? [value] : [];
+
+  const parts = value.split('\n━━━━━━━━━━━━\n');
+  if (parts.length <= 1) return splitTelegramText(value, maxChars);
+
+  const chunks = [];
+  let current = parts[0];
+  for (const section of parts.slice(1)) {
+    const candidate = `${current}\n━━━━━━━━━━━━\n${section}`;
+    if (candidate.length <= maxChars) {
+      current = candidate;
+      continue;
+    }
+    if (current) chunks.push(current);
+    current = section;
+    if (current.length > maxChars) {
+      chunks.push(...splitTelegramText(current, maxChars));
+      current = '';
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
 }
 
 async function collectAllGirlDigests(girls = GIRLS) {
@@ -430,13 +788,20 @@ module.exports = {
   collectAllGirlDigests,
   collectBakusaiMentions,
   collectGirlDigest,
+  collectMonthlyDiaries,
+  collectWeeklyReviews,
+  extractScheduleFromDiaries,
   formatGirlSection,
   matchesGirl,
   parseDiaries,
+  parseDiaryDetail,
+  parseDiaryNextPage,
   parseProfile,
   parseReservation,
   parseReviews,
   parseThreadLinks,
+  searchBakusaiResponsesForGirl,
+  searchWebForBakusaiMentions,
   sendGirlsDigestToTelegram,
   splitGirlsDigestMessage,
 };

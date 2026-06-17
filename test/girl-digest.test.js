@@ -4,9 +4,11 @@ const test = require('node:test');
 const {
   GIRLS,
   buildGirlsDigestMessage,
+  extractScheduleFromDiaries,
   formatGirlSection,
   matchesGirl,
   parseDiaries,
+  parseDiaryDetail,
   parseReservation,
   parseReviews,
   parseThreadLinks,
@@ -38,13 +40,31 @@ test('parseDiaries extracts latest diary cards', () => {
       <p class="diary_title">今日の日記</p>
       <p class="diary_time">06/17 12:00</p>
       <p class="diary_detail">本文の一部です</p>
+      <img src="/img/diary.jpg">
     </div>
   `, 'https://www.cityheaven.net/osaka/shop/girlid-1/diary/');
 
   assert.equal(diaries[0].title, '今日の日記');
   assert.equal(diaries[0].date, '06/17 12:00');
+  assert.equal(diaries[0].dateKey, '2026-06-17');
   assert.equal(diaries[0].snippet, '本文の一部です');
+  assert.match(diaries[0].imageUrls[0], /\/img\/diary\.jpg$/);
   assert.match(diaries[0].url, /^https:\/\/www\.cityheaven\.net/);
+});
+
+test('parseDiaryDetail extracts diary body and media links', () => {
+  const detail = parseDiaryDetail(`
+    <h1>追加枠のお知らせ</h1>
+    <time>06/17 13:00</time>
+    <article>本日15:00から追加枠あります。</article>
+    <img src="/photos/a.jpg">
+    <video src="/movies/a.mp4"></video>
+  `, 'https://www.cityheaven.net/shop/girlid-1/diary/pd-1/');
+
+  assert.equal(detail.title, '追加枠のお知らせ');
+  assert.match(detail.body, /追加枠/);
+  assert.match(detail.imageUrls[0], /\/photos\/a\.jpg$/);
+  assert.match(detail.videoUrls[0], /\/movies\/a\.mp4$/);
 });
 
 test('parseDiaries ignores CityHeaven menu and JavaScript placeholder noise', () => {
@@ -69,6 +89,7 @@ test('parseReviews only keeps reviews matching the target girl', () => {
     <li class="review-item">
       <span class="total_rate">4.8</span>
       <span class="review-item-title">良かった</span>
+      <p class="review-item-post-date">掲載日：2026/06/17</p>
       <p class="review-item-post">井上キキさんの接客が良かったです。</p>
       <a href="/osaka/shop/reviews/rv-1/">詳細</a>
     </li>
@@ -79,7 +100,23 @@ test('parseReviews only keeps reviews matching the target girl', () => {
 
   assert.equal(reviews.length, 1);
   assert.equal(reviews[0].rating, '4.8');
+  assert.equal(reviews[0].dateKey, '2026-06-17');
   assert.match(reviews[0].comment, /井上キキ/);
+});
+
+test('extractScheduleFromDiaries builds schedule rows from monthly diary text', () => {
+  const rows = extractScheduleFromDiaries([
+    {
+      title: '追加枠ご予約募集のお知らせ',
+      dateKey: '2026-06-17',
+      body: '本日15:00から17:00まで空き枠あります。ご予約受付中です。',
+      url: 'https://example.test/diary',
+    },
+  ], { now: new Date('2026-06-17T03:00:00Z') });
+
+  assert.ok(rows.length >= 1);
+  assert.equal(rows[0].date, '2026-06-17');
+  assert.ok(rows.some(row => /空き枠/.test(row.detail)));
 });
 
 test('parseThreadLinks keeps board threads matching the target girl', () => {
@@ -97,30 +134,36 @@ test('formatGirlSection creates readable grouped Telegram section', () => {
     girl: GIRLS[0],
     profile: ['身長: 160cm'],
     reservation: ['06/17 10:00-18:00 予約受付中'],
-    diaries: [{ title: '今日の日記', titleZh: '今天的日记', snippet: '本文です', snippetZh: '正文' }],
-    reviews: [{ title: '良かった', rating: '4.8', comment: '楽しかったです', commentZh: '很开心' }],
+    diarySchedule: [{ date: '2026-06-17', time: '15:00', detail: '追加枠あります' }],
+    diaries: [{ title: '今日の日記', titleZh: '今天的日记', snippet: '本文です', snippetZh: '正文', imageUrls: ['https://example.test/a.jpg'], videoUrls: ['https://example.test/a.mp4'] }],
+    reviews: [{ title: '良かった', rating: '4.8', summary: '客人说很开心' }],
     bakusai: [{ num: 12, time: '2026/06/17 10:00', content: 'キキの話題', contentZh: '关于Kiki的话题' }],
     warnings: [],
   });
 
   assert.match(section, /👤 井上キキ/);
-  assert.match(section, /🗓 出勤\/预约/);
+  assert.match(section, /🗓 日记提取出勤表/);
+  assert.match(section, /📅 官方预约页/);
   assert.match(section, /🔵 今天的日记/);
-  assert.match(section, /💬 爆さい提及/);
+  assert.match(section, /📷 https:\/\/example\.test\/a\.jpg/);
+  assert.match(section, /🎬 https:\/\/example\.test\/a\.mp4/);
+  assert.match(section, /客人大概说：客人说很开心/);
+  assert.match(section, /💬 爆さい相关提及/);
 });
 
 test('formatGirlSection prints empty Bakusai mentions as a plain empty-state line', () => {
   const section = formatGirlSection({
-    girl: GIRLS[1],
-    profile: [],
-    reservation: [],
-    diaries: [],
-    reviews: [],
-    bakusai: [],
+      girl: GIRLS[1],
+      profile: [],
+      reservation: [],
+      diarySchedule: [],
+      diaries: [],
+      reviews: [],
+      bakusai: [],
     warnings: [],
   });
 
-  assert.match(section, /💬 爆さい提及\n  - 暂无匹配提及/);
+  assert.match(section, /💬 爆さい相关提及（最新尽量10条）\n  - 暂无匹配提及/);
   assert.doesNotMatch(section, /🇯🇵 暂无匹配提及/);
 });
 
@@ -129,6 +172,7 @@ test('buildGirlsDigestMessage and splitGirlsDigestMessage support long combined 
     {
       girl: GIRLS[0],
       profile: [],
+      diarySchedule: [],
       reservation: Array.from({ length: 8 }, (_, index) => `06/${17 + index} 10:00-18:00 予約受付中`),
       diaries: Array.from({ length: 3 }, (_, index) => ({
         title: `日記 ${index + 1}`,
