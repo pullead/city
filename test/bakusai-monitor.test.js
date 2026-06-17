@@ -58,6 +58,26 @@ test('createNotificationPlan initializes state without notifying on first run', 
   assert.deepEqual(plan.newPosts, []);
 });
 
+test('createNotificationPlan can notify recent history on first run', () => {
+  const plan = createNotificationPlan(
+    [
+      { num: 101, content: 'older' },
+      { num: 102, content: 'latest' },
+    ],
+    null,
+    {
+      threadId: '13315868',
+      notifyHistoryWhenNoNew: true,
+      historyPostLimit: 1,
+    },
+  );
+
+  assert.equal(plan.shouldNotify, true);
+  assert.equal(plan.notificationKind, 'history');
+  assert.deepEqual(plan.notificationPosts.map(post => post.num), [102]);
+  assert.equal(plan.nextState.lastSeenPostNum, 102);
+});
+
 test('createNotificationPlan returns only posts newer than stored state', () => {
   const plan = createNotificationPlan(
     [
@@ -72,6 +92,27 @@ test('createNotificationPlan returns only posts newer than stored state', () => 
   assert.equal(plan.shouldNotify, true);
   assert.deepEqual(plan.newPosts.map(post => post.num), [102, 103]);
   assert.equal(plan.nextState.lastSeenPostNum, 103);
+});
+
+test('createNotificationPlan can notify recent history when there are no new posts', () => {
+  const plan = createNotificationPlan(
+    [
+      { num: 101, content: 'older' },
+      { num: 102, content: 'latest' },
+    ],
+    { threadId: '13315868', lastSeenPostNum: 102 },
+    {
+      threadId: '13315868',
+      notifyHistoryWhenNoNew: true,
+      historyPostLimit: 2,
+    },
+  );
+
+  assert.equal(plan.shouldNotify, true);
+  assert.equal(plan.notificationKind, 'history');
+  assert.deepEqual(plan.newPosts, []);
+  assert.deepEqual(plan.notificationPosts.map(post => post.num), [101, 102]);
+  assert.equal(plan.nextState.lastSeenPostNum, 102);
 });
 
 test('buildBarkPayload summarizes new posts and links to the monitored thread', () => {
@@ -89,6 +130,20 @@ test('buildBarkPayload summarizes new posts and links to the monitored thread', 
   assert.match(payload.body, /短い本文/);
   assert.equal(payload.url, 'https://bakusai.com/thr_res/acode=18/ctgid=103/bid=436/tid=13315868/tp=1/');
   assert.equal(payload.group, 'bakusai-monitor');
+});
+
+test('buildBarkPayload labels historical posts differently from new posts', () => {
+  const payload = buildBarkPayload({
+    threadTitle: 'Bakusai 13315868',
+    threadUrl: 'https://bakusai.com/thr_res/acode=18/ctgid=103/bid=436/tid=13315868/tp=1/',
+    notificationKind: 'history',
+    newPosts: [
+      { num: 102, time: '2026/06/17 12:40', content: 'latest historical post' },
+    ],
+  });
+
+  assert.equal(payload.title, 'Bakusai 13315868: latest 1 historical posts');
+  assert.match(payload.body, /latest historical post/);
 });
 
 test('normalizeBarkEndpoint accepts a full Bark key URL without committing message text', () => {

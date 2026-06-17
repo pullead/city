@@ -16,7 +16,9 @@ Create a GitHub Actions repository secret named `BARK_API_URL` with this value:
 https://api.day.app/<your-bark-key>
 ```
 
-The workflow reads that secret and sends one Bark notification when new Bakusai posts are found.
+The workflow reads that secret and sends one Bark notification on every run.
+
+When new Bakusai posts are found, the notification contains the new posts. When there are no new posts, the notification contains the latest historical posts from the thread.
 
 ## Duplicate Prevention
 
@@ -26,12 +28,12 @@ GitHub-hosted runners are temporary, so the workflow stores the last seen Bakusa
 .crawler-state/bakusai-monitor.json
 ```
 
-The first successful run creates this baseline and does not push historical posts. Later runs notify only posts with a higher response number.
+The workflow stores the last seen response number so it can tell new posts from historical posts. It still sends historical posts when there is nothing new.
 
-To force notifications on the first run, set this environment variable in the workflow:
+The number of historical posts is controlled by this workflow environment variable:
 
 ```text
-BARK_NOTIFY_ON_FIRST_RUN: 'true'
+BARK_HISTORY_POST_LIMIT: '3'
 ```
 
 ## Local Run

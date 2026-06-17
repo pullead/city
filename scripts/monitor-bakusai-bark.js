@@ -58,6 +58,8 @@ async function main() {
   const statePath = process.env.BAKUSAI_STATE_PATH || DEFAULT_STATE_PATH;
   const maxPages = envInt('BAKUSAI_MAX_PAGES', 1);
   const notifyOnFirstRun = envFlag('BARK_NOTIFY_ON_FIRST_RUN', false);
+  const notifyHistoryWhenNoNew = envFlag('BARK_NOTIFY_HISTORY_WHEN_NO_NEW', true);
+  const historyPostLimit = envInt('BARK_HISTORY_POST_LIMIT', 3);
 
   const posts = await fetchPosts(threadUrl, maxPages);
   if (posts.length === 0) {
@@ -65,20 +67,26 @@ async function main() {
   }
 
   const previousState = loadState(statePath);
-  const plan = createNotificationPlan(posts, previousState, { threadId, notifyOnFirstRun });
+  const plan = createNotificationPlan(posts, previousState, {
+    threadId,
+    notifyOnFirstRun,
+    notifyHistoryWhenNoNew,
+    historyPostLimit,
+  });
 
-  console.log(`[bakusai] firstRun=${plan.firstRun} newPosts=${plan.newPosts.length} lastSeen=${plan.nextState.lastSeenPostNum}`);
+  console.log(`[bakusai] firstRun=${plan.firstRun} newPosts=${plan.newPosts.length} notificationKind=${plan.notificationKind} notificationPosts=${plan.notificationPosts.length} lastSeen=${plan.nextState.lastSeenPostNum}`);
 
   if (plan.shouldNotify) {
     const payload = buildBarkPayload({
       threadTitle,
       threadUrl,
-      newPosts: plan.newPosts,
+      newPosts: plan.notificationPosts,
+      notificationKind: plan.notificationKind,
     });
     await sendBarkNotification(process.env.BARK_API_URL, payload);
     console.log('[bark] notification sent');
   } else if (plan.firstRun) {
-    console.log('[bark] first run baseline created; no historical posts pushed');
+    console.log('[bark] first run baseline created; no posts pushed');
   } else {
     console.log('[bark] no new posts');
   }

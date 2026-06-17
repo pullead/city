@@ -75,13 +75,22 @@ function createNotificationPlan(posts, previousState, options = {}) {
   const maxPostNum = sortedPosts.reduce((max, post) => Math.max(max, post.num || 0), 0);
   const threadId = options.threadId || previousState?.threadId || DEFAULT_THREAD_ID;
   const now = options.now || new Date().toISOString();
+  const historyPostLimit = options.historyPostLimit || 3;
+  const historyPosts = options.notifyHistoryWhenNoNew
+    ? sortedPosts.slice(-historyPostLimit)
+    : [];
 
   if (!previousState || !Number.isFinite(previousState.lastSeenPostNum)) {
     const firstRunPosts = options.notifyOnFirstRun ? sortedPosts : [];
+    const notificationPosts = firstRunPosts.length > 0 ? firstRunPosts : historyPosts;
+    const notificationKind = firstRunPosts.length > 0 ? 'new' : 'history';
     return {
       firstRun: true,
-      shouldNotify: firstRunPosts.length > 0,
+      shouldNotify: notificationPosts.length > 0,
       newPosts: firstRunPosts,
+      historyPosts,
+      notificationPosts,
+      notificationKind,
       nextState: {
         threadId,
         lastSeenPostNum: maxPostNum,
@@ -92,11 +101,16 @@ function createNotificationPlan(posts, previousState, options = {}) {
 
   const lastSeen = previousState.lastSeenPostNum || 0;
   const newPosts = sortedPosts.filter(post => post.num > lastSeen);
+  const notificationPosts = newPosts.length > 0 ? newPosts : historyPosts;
+  const notificationKind = newPosts.length > 0 ? 'new' : 'history';
 
   return {
     firstRun: false,
-    shouldNotify: newPosts.length > 0,
+    shouldNotify: notificationPosts.length > 0,
     newPosts,
+    historyPosts,
+    notificationPosts,
+    notificationKind,
     nextState: {
       ...previousState,
       threadId,
@@ -112,7 +126,7 @@ function truncate(text, maxLength) {
   return `${value.slice(0, maxLength - 3)}...`;
 }
 
-function buildBarkPayload({ threadTitle, threadUrl, newPosts }) {
+function buildBarkPayload({ threadTitle, threadUrl, newPosts, notificationKind = 'new' }) {
   const posts = [...(newPosts || [])].sort((a, b) => b.num - a.num);
   const visiblePosts = posts.slice(0, 3);
   const lines = visiblePosts.map(post => {
@@ -124,7 +138,9 @@ function buildBarkPayload({ threadTitle, threadUrl, newPosts }) {
   }
 
   return {
-    title: `${threadTitle || DEFAULT_THREAD_TITLE}: ${posts.length} new posts`,
+    title: notificationKind === 'history'
+      ? `${threadTitle || DEFAULT_THREAD_TITLE}: latest ${posts.length} historical posts`
+      : `${threadTitle || DEFAULT_THREAD_TITLE}: ${posts.length} new posts`,
     body: lines.join('\n\n'),
     url: buildPageUrl(threadUrl || DEFAULT_THREAD_URL, 1),
     group: 'bakusai-monitor',
