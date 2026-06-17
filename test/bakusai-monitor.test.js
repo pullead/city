@@ -3,8 +3,10 @@ const test = require('node:test');
 
 const {
   buildBarkPayload,
+  buildDailySummaries,
   buildPageUrl,
   createNotificationPlan,
+  isWithinPushHours,
   translatePostsToChinese,
   normalizeBarkEndpoint,
   parsePosts,
@@ -201,6 +203,55 @@ test('buildBarkPayload groups today yesterday two days ago and three days ago in
     /📅 今日 \/ 今天 2026-06-17[\s\S]*today ja\n今天中文[\s\S]*📅 昨日 \/ 昨天 2026-06-16[\s\S]*yesterday ja\n昨天中文[\s\S]*📅 一昨日 \/ 前天 2026-06-15[\s\S]*two days ja\n前天中文[\s\S]*📅 3日前 \/ 大前天 2026-06-14[\s\S]*three days ja\n大前天中文/,
   );
   assert.doesNotMatch(payload.body, /\.\.\.and/);
+});
+
+test('buildBarkPayload adds a daily Japanese summary followed by Chinese translation before posts', () => {
+  const payload = buildBarkPayload({
+    threadTitle: 'Bakusai 13315868',
+    threadUrl: 'https://bakusai.com/thr_res/acode=18/ctgid=103/bid=436/tid=13315868/tp=1/',
+    now: new Date('2026-06-17T03:00:00Z'),
+    dailySummaries: {
+      '2026-06-17': {
+        ja: 'この日は料金についての投稿が目立ちました。接客に関する感想も出ています。全体として情報交換が続いています。',
+        zh: '这一天关于价格的帖子比较明显。也出现了关于接客的感想。整体上讨论仍在继续。',
+      },
+    },
+    newPosts: [
+      { num: 101, time: '2026/06/17 10:00', content: '料金の話題', contentZh: '价格话题' },
+    ],
+  });
+
+  assert.match(
+    payload.body,
+    /📝 まとめ \/ 摘要\nこの日は料金についての投稿が目立ちました。接客に関する感想も出ています。全体として情報交換が続いています。\n这一天关于价格的帖子比较明显。也出现了关于接客的感想。整体上讨论仍在继续。[\s\S]*🧾 #101/,
+  );
+});
+
+test('buildDailySummaries creates translated summaries for each recent day', async () => {
+  const summaries = await buildDailySummaries(
+    [
+      { num: 101, time: '2026/06/17 10:00', content: '料金が話題です' },
+      { num: 102, time: '2026/06/17 11:00', content: '接客の感想があります' },
+    ],
+    {
+      now: new Date('2026-06-17T03:00:00Z'),
+      fetchImpl: async () => ({
+        ok: true,
+        json: async () => ([[['中文摘要', '日本語要約']]]),
+      }),
+    },
+  );
+
+  assert.match(summaries['2026-06-17'].ja, /この日は2件の投稿がありました。/);
+  assert.equal(summaries['2026-06-17'].zh, '中文摘要');
+  assert.match(summaries['2026-06-16'].ja, /この日の投稿はありませんでした。/);
+});
+
+test('isWithinPushHours allows 7 through 23 JST and blocks other hours', () => {
+  assert.equal(isWithinPushHours(new Date('2026-06-16T22:00:00Z')), true);
+  assert.equal(isWithinPushHours(new Date('2026-06-17T14:59:00Z')), true);
+  assert.equal(isWithinPushHours(new Date('2026-06-17T15:00:00Z')), false);
+  assert.equal(isWithinPushHours(new Date('2026-06-16T21:59:00Z')), false);
 });
 
 test('translatePostsToChinese keeps Japanese first and Chinese translation next', async () => {

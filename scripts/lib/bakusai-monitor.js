@@ -143,6 +143,73 @@ function selectRecentDayPosts(posts, options = {}) {
     });
 }
 
+function cleanSummarySnippet(text) {
+  return truncate(
+    String(text || '')
+      .replace(/>>\d+/g, '')
+      .replace(/\s+/g, ' ')
+      .trim(),
+    56,
+  );
+}
+
+function buildDailySummaryJa(dayPosts, bucket) {
+  const posts = [...(dayPosts || [])].sort((a, b) => (a.num || 0) - (b.num || 0));
+  if (posts.length === 0) {
+    return 'この日の投稿はありませんでした。新しい話題は確認できません。前後の日付の投稿を確認してください。';
+  }
+
+  const snippets = posts.map(post => cleanSummarySnippet(post.content)).filter(Boolean);
+  const lines = [
+    `この日は${posts.length}件の投稿がありました。`,
+    snippets[0]
+      ? `主な話題は「${snippets[0]}」です。`
+      : '主な話題は短い反応や確認が中心です。',
+    snippets[1]
+      ? `続いて「${snippets[1]}」という内容も見られました。`
+      : '追加の具体的な反応は限られています。',
+    snippets[2]
+      ? `ほかにも「${snippets[2]}」に関する投稿があります。`
+      : '全体として、スレッド内で情報交換と感想の共有が続いています。',
+  ];
+
+  return lines.join('');
+}
+
+async function buildDailySummaries(posts, options = {}) {
+  const buckets = getRecentDayBuckets(options);
+  const recentPosts = selectRecentDayPosts(posts || [], options);
+  const postsByDate = new Map();
+  for (const post of recentPosts) {
+    if (!postsByDate.has(post.dateKey)) postsByDate.set(post.dateKey, []);
+    postsByDate.get(post.dateKey).push(post);
+  }
+
+  const summaries = {};
+  for (const bucket of buckets) {
+    const ja = buildDailySummaryJa(postsByDate.get(bucket.key) || [], bucket);
+    let zh;
+    try {
+      zh = await translateTextJaToZh(ja, options);
+    } catch (error) {
+      zh = '（中文摘要翻译失败）';
+    }
+    summaries[bucket.key] = { ja, zh };
+  }
+  return summaries;
+}
+
+function isWithinPushHours(now = new Date(), options = {}) {
+  const timeZone = options.timeZone || 'Asia/Tokyo';
+  const hourText = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour: '2-digit',
+    hourCycle: 'h23',
+  }).format(now);
+  const hour = Number.parseInt(hourText, 10);
+  return hour >= 7 && hour <= 23;
+}
+
 function createNotificationPlan(posts, previousState, options = {}) {
   const sortedPosts = [...(posts || [])].sort((a, b) => a.num - b.num);
   const recentPosts = selectRecentDayPosts(sortedPosts, options);
@@ -199,7 +266,7 @@ function truncate(text, maxLength) {
   return `${value.slice(0, maxLength - 3)}...`;
 }
 
-function buildBarkPayload({ threadTitle, threadUrl, newPosts, notificationKind = 'new', now, timeZone = 'Asia/Tokyo' }) {
+function buildBarkPayload({ threadTitle, threadUrl, newPosts, notificationKind = 'new', now, timeZone = 'Asia/Tokyo', dailySummaries = {} }) {
   const buckets = getRecentDayBuckets({ now, timeZone });
   const posts = selectRecentDayPosts(newPosts || [], { now, timeZone });
   const postsByDate = new Map();
@@ -219,6 +286,14 @@ function buildBarkPayload({ threadTitle, threadUrl, newPosts, notificationKind =
     const dayPosts = postsByDate.get(bucket.key) || [];
     lines.push(`📅 ${bucket.ja} / ${bucket.zh} ${bucket.key}`);
     lines.push('━━━━━━━━━━━━');
+    const summary = dailySummaries[bucket.key] || {
+      ja: buildDailySummaryJa(dayPosts, bucket),
+      zh: '（中文摘要不可用）',
+    };
+    lines.push('📝 まとめ / 摘要');
+    lines.push(summary.ja);
+    lines.push(summary.zh);
+    lines.push('');
     if (dayPosts.length === 0) {
       lines.push('投稿なし');
       lines.push('无帖子');
@@ -325,8 +400,10 @@ module.exports = {
   DEFAULT_THREAD_URL,
   DEFAULT_NOTIFICATION_POST_LIMIT,
   buildBarkPayload,
+  buildDailySummaries,
   buildPageUrl,
   createNotificationPlan,
+  isWithinPushHours,
   loadState,
   normalizeBarkEndpoint,
   parsePosts,

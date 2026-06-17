@@ -22,6 +22,8 @@ When new Bakusai posts are found, the notification contains all posts from today
 
 Each post is formatted with the Japanese original first and the Chinese translation on the next line.
 
+Each day section starts with a short Japanese discussion summary and its Chinese translation.
+
 ## Duplicate Prevention
 
 GitHub-hosted runners are temporary, so the workflow stores the last seen Bakusai post number in:
@@ -37,7 +39,10 @@ The workflow fetches enough pages to cover the four-day window:
 ```text
 BAKUSAI_MAX_PAGES: '30'
 BARK_TRANSLATE_TO_ZH: 'true'
+BARK_ENFORCE_PUSH_HOURS: 'true'
 ```
+
+Pushes are sent hourly from 07:00 through 23:00 Japan time. Outside that window, the workflow exits without sending Bark notifications.
 
 ## Local Run
 

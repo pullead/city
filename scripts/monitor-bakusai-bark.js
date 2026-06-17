@@ -7,8 +7,10 @@ const {
   DEFAULT_THREAD_TITLE,
   DEFAULT_THREAD_URL,
   buildBarkPayload,
+  buildDailySummaries,
   buildPageUrl,
   createNotificationPlan,
+  isWithinPushHours,
   loadState,
   parsePosts,
   saveState,
@@ -53,6 +55,12 @@ async function fetchPosts(threadUrl, maxPages) {
 }
 
 async function main() {
+  const enforcePushHours = envFlag('BARK_ENFORCE_PUSH_HOURS', true);
+  if (enforcePushHours && !isWithinPushHours(new Date())) {
+    console.log('[bark] outside push hours in Asia/Tokyo; skipping silently');
+    return;
+  }
+
   const threadUrl = process.env.BAKUSAI_THREAD_URL || DEFAULT_THREAD_URL;
   const threadId = process.env.BAKUSAI_THREAD_ID || DEFAULT_THREAD_ID;
   const threadTitle = process.env.BAKUSAI_THREAD_TITLE || DEFAULT_THREAD_TITLE;
@@ -77,6 +85,9 @@ async function main() {
   console.log(`[bakusai] firstRun=${plan.firstRun} newPosts=${plan.newPosts.length} notificationKind=${plan.notificationKind} notificationPosts=${plan.notificationPosts.length} lastSeen=${plan.nextState.lastSeenPostNum}`);
 
   if (plan.shouldNotify) {
+    const dailySummaries = translateToChinese
+      ? await buildDailySummaries(plan.notificationPosts)
+      : {};
     const notificationPosts = translateToChinese
       ? await translatePostsToChinese(plan.notificationPosts)
       : plan.notificationPosts;
@@ -85,6 +96,7 @@ async function main() {
       threadUrl,
       newPosts: notificationPosts,
       notificationKind: plan.notificationKind,
+      dailySummaries,
     });
     await sendBarkNotification(process.env.BARK_API_URL, payload);
     console.log('[bark] notification sent');
