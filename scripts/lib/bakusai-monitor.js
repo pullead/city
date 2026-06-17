@@ -8,6 +8,7 @@ const DEFAULT_THREAD_URL = 'https://bakusai.com/thr_res/acode=18/ctgid=103/bid=4
 const DEFAULT_THREAD_ID = '13315868';
 const DEFAULT_THREAD_TITLE = 'Bakusai monitor';
 const DEFAULT_STATE_PATH = path.resolve(__dirname, '..', '..', '.crawler-state', 'bakusai-monitor.json');
+const DEFAULT_NOTIFICATION_POST_LIMIT = 20;
 
 function decodeEntities(text) {
   return String(text || '')
@@ -75,14 +76,15 @@ function createNotificationPlan(posts, previousState, options = {}) {
   const maxPostNum = sortedPosts.reduce((max, post) => Math.max(max, post.num || 0), 0);
   const threadId = options.threadId || previousState?.threadId || DEFAULT_THREAD_ID;
   const now = options.now || new Date().toISOString();
-  const historyPostLimit = options.historyPostLimit || 3;
+  const notificationPostLimit = options.notificationPostLimit || DEFAULT_NOTIFICATION_POST_LIMIT;
+  const historyPostLimit = options.historyPostLimit || notificationPostLimit;
   const historyPosts = options.notifyHistoryWhenNoNew
     ? sortedPosts.slice(-historyPostLimit)
     : [];
 
   if (!previousState || !Number.isFinite(previousState.lastSeenPostNum)) {
     const firstRunPosts = options.notifyOnFirstRun ? sortedPosts : [];
-    const notificationPosts = firstRunPosts.length > 0 ? firstRunPosts : historyPosts;
+    const notificationPosts = firstRunPosts.length > 0 ? firstRunPosts.slice(-notificationPostLimit) : historyPosts;
     const notificationKind = firstRunPosts.length > 0 ? 'new' : 'history';
     return {
       firstRun: true,
@@ -101,7 +103,7 @@ function createNotificationPlan(posts, previousState, options = {}) {
 
   const lastSeen = previousState.lastSeenPostNum || 0;
   const newPosts = sortedPosts.filter(post => post.num > lastSeen);
-  const notificationPosts = newPosts.length > 0 ? newPosts : historyPosts;
+  const notificationPosts = newPosts.length > 0 ? newPosts.slice(-notificationPostLimit) : historyPosts;
   const notificationKind = newPosts.length > 0 ? 'new' : 'history';
 
   return {
@@ -126,12 +128,14 @@ function truncate(text, maxLength) {
   return `${value.slice(0, maxLength - 3)}...`;
 }
 
-function buildBarkPayload({ threadTitle, threadUrl, newPosts, notificationKind = 'new' }) {
+function buildBarkPayload({ threadTitle, threadUrl, newPosts, notificationKind = 'new', postLimit = DEFAULT_NOTIFICATION_POST_LIMIT }) {
   const posts = [...(newPosts || [])].sort((a, b) => b.num - a.num);
-  const visiblePosts = posts.slice(0, 3);
+  const visiblePosts = posts.slice(0, postLimit);
   const lines = visiblePosts.map(post => {
     const time = post.time ? ` ${post.time}` : '';
-    return `#${post.num}${time}\n${truncate(post.content, 180)}`;
+    const ja = truncate(post.content, 120);
+    const zh = truncate(post.contentZh || '（中文翻译不可用）', 120);
+    return `#${post.num}${time}\n${ja}\n${zh}`;
   });
   if (posts.length > visiblePosts.length) {
     lines.push(`...and ${posts.length - visiblePosts.length} more`);
@@ -145,6 +149,47 @@ function buildBarkPayload({ threadTitle, threadUrl, newPosts, notificationKind =
     url: buildPageUrl(threadUrl || DEFAULT_THREAD_URL, 1),
     group: 'bakusai-monitor',
   };
+}
+
+function parseGoogleTranslateResponse(payload) {
+  if (!Array.isArray(payload) || !Array.isArray(payload[0])) return '';
+  return payload[0]
+    .filter(part => Array.isArray(part) && typeof part[0] === 'string')
+    .map(part => part[0])
+    .join('');
+}
+
+async function translateTextJaToZh(text, options = {}) {
+  const value = String(text || '').trim();
+  if (!value) return '';
+
+  const fetchImpl = options.fetchImpl || fetch;
+  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=ja&tl=zh-CN&dt=t&q=${encodeURIComponent(value)}`;
+  const response = await fetchImpl(url, {
+    headers: {
+      'User-Agent': options.ua || 'Mozilla/5.0',
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`translation failed: HTTP ${response.status}`);
+  }
+  return parseGoogleTranslateResponse(await response.json());
+}
+
+async function translatePostsToChinese(posts, options = {}) {
+  const translated = [];
+  for (const post of posts || []) {
+    let contentZh = post.contentZh;
+    if (!contentZh) {
+      try {
+        contentZh = await translateTextJaToZh(post.content, options);
+      } catch (error) {
+        contentZh = '（中文翻译失败，显示日文原文）';
+      }
+    }
+    translated.push({ ...post, contentZh });
+  }
+  return translated;
 }
 
 function normalizeBarkEndpoint(endpoint) {
@@ -186,6 +231,7 @@ module.exports = {
   DEFAULT_THREAD_ID,
   DEFAULT_THREAD_TITLE,
   DEFAULT_THREAD_URL,
+  DEFAULT_NOTIFICATION_POST_LIMIT,
   buildBarkPayload,
   buildPageUrl,
   createNotificationPlan,
@@ -194,4 +240,6 @@ module.exports = {
   parsePosts,
   saveState,
   sendBarkNotification,
+  translatePostsToChinese,
+  translateTextJaToZh,
 };

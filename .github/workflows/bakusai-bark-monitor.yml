@@ -40,7 +40,9 @@ jobs:
           BAKUSAI_THREAD_TITLE: Bakusai 13315868
           BAKUSAI_MAX_PAGES: '1'
           BARK_NOTIFY_HISTORY_WHEN_NO_NEW: 'true'
-          BARK_HISTORY_POST_LIMIT: '3'
+          BARK_HISTORY_POST_LIMIT: '20'
+          BARK_NOTIFICATION_POST_LIMIT: '20'
+          BARK_TRANSLATE_TO_ZH: 'true'
 
       - name: Commit monitor state
         run: |

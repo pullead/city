@@ -13,6 +13,7 @@ const {
   parsePosts,
   saveState,
   sendBarkNotification,
+  translatePostsToChinese,
 } = require('./lib/bakusai-monitor');
 const { fetchText } = require('./lib/http-fetch');
 
@@ -59,7 +60,9 @@ async function main() {
   const maxPages = envInt('BAKUSAI_MAX_PAGES', 1);
   const notifyOnFirstRun = envFlag('BARK_NOTIFY_ON_FIRST_RUN', false);
   const notifyHistoryWhenNoNew = envFlag('BARK_NOTIFY_HISTORY_WHEN_NO_NEW', true);
-  const historyPostLimit = envInt('BARK_HISTORY_POST_LIMIT', 3);
+  const historyPostLimit = envInt('BARK_HISTORY_POST_LIMIT', 20);
+  const notificationPostLimit = envInt('BARK_NOTIFICATION_POST_LIMIT', 20);
+  const translateToChinese = envFlag('BARK_TRANSLATE_TO_ZH', true);
 
   const posts = await fetchPosts(threadUrl, maxPages);
   if (posts.length === 0) {
@@ -72,16 +75,21 @@ async function main() {
     notifyOnFirstRun,
     notifyHistoryWhenNoNew,
     historyPostLimit,
+    notificationPostLimit,
   });
 
   console.log(`[bakusai] firstRun=${plan.firstRun} newPosts=${plan.newPosts.length} notificationKind=${plan.notificationKind} notificationPosts=${plan.notificationPosts.length} lastSeen=${plan.nextState.lastSeenPostNum}`);
 
   if (plan.shouldNotify) {
+    const notificationPosts = translateToChinese
+      ? await translatePostsToChinese(plan.notificationPosts)
+      : plan.notificationPosts;
     const payload = buildBarkPayload({
       threadTitle,
       threadUrl,
-      newPosts: plan.notificationPosts,
+      newPosts: notificationPosts,
       notificationKind: plan.notificationKind,
+      postLimit: notificationPostLimit,
     });
     await sendBarkNotification(process.env.BARK_API_URL, payload);
     console.log('[bark] notification sent');

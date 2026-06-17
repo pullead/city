@@ -5,6 +5,7 @@ const {
   buildBarkPayload,
   buildPageUrl,
   createNotificationPlan,
+  translatePostsToChinese,
   normalizeBarkEndpoint,
   parsePosts,
 } = require('../scripts/lib/bakusai-monitor');
@@ -94,6 +95,24 @@ test('createNotificationPlan returns only posts newer than stored state', () => 
   assert.equal(plan.nextState.lastSeenPostNum, 103);
 });
 
+test('createNotificationPlan limits new post notifications to the latest 20 posts', () => {
+  const posts = Array.from({ length: 25 }, (_, index) => ({
+    num: index + 1,
+    content: `post ${index + 1}`,
+  }));
+
+  const plan = createNotificationPlan(
+    posts,
+    { threadId: '13315868', lastSeenPostNum: 0 },
+    { threadId: '13315868' },
+  );
+
+  assert.equal(plan.shouldNotify, true);
+  assert.equal(plan.notificationKind, 'new');
+  assert.equal(plan.notificationPosts.length, 20);
+  assert.deepEqual(plan.notificationPosts.map(post => post.num), Array.from({ length: 20 }, (_, index) => index + 6));
+});
+
 test('createNotificationPlan can notify recent history when there are no new posts', () => {
   const plan = createNotificationPlan(
     [
@@ -115,19 +134,41 @@ test('createNotificationPlan can notify recent history when there are no new pos
   assert.equal(plan.nextState.lastSeenPostNum, 102);
 });
 
+test('createNotificationPlan defaults historical notifications to the latest 20 posts', () => {
+  const posts = Array.from({ length: 25 }, (_, index) => ({
+    num: index + 1,
+    content: `post ${index + 1}`,
+  }));
+
+  const plan = createNotificationPlan(
+    posts,
+    { threadId: '13315868', lastSeenPostNum: 25 },
+    {
+      threadId: '13315868',
+      notifyHistoryWhenNoNew: true,
+    },
+  );
+
+  assert.equal(plan.shouldNotify, true);
+  assert.equal(plan.notificationKind, 'history');
+  assert.equal(plan.notificationPosts.length, 20);
+  assert.deepEqual(plan.notificationPosts.map(post => post.num), Array.from({ length: 20 }, (_, index) => index + 6));
+});
+
 test('buildBarkPayload summarizes new posts and links to the monitored thread', () => {
   const payload = buildBarkPayload({
     threadTitle: 'Bakusai 監視',
     threadUrl: 'https://bakusai.com/thr_res/acode=18/ctgid=103/bid=436/tid=13315868/tp=1/',
     newPosts: [
-      { num: 102, time: '2026/06/17 12:40', content: 'a'.repeat(120) },
-      { num: 103, time: '2026/06/17 12:45', content: '短い本文' },
+      { num: 102, time: '2026/06/17 12:40', content: 'a'.repeat(120), contentZh: '中文1' },
+      { num: 103, time: '2026/06/17 12:45', content: '短い本文', contentZh: '简短正文' },
     ],
   });
 
   assert.equal(payload.title, 'Bakusai 監視: 2 new posts');
   assert.match(payload.body, /#103 2026\/06\/17 12:45/);
   assert.match(payload.body, /短い本文/);
+  assert.match(payload.body, /简短正文/);
   assert.equal(payload.url, 'https://bakusai.com/thr_res/acode=18/ctgid=103/bid=436/tid=13315868/tp=1/');
   assert.equal(payload.group, 'bakusai-monitor');
 });
@@ -138,12 +179,46 @@ test('buildBarkPayload labels historical posts differently from new posts', () =
     threadUrl: 'https://bakusai.com/thr_res/acode=18/ctgid=103/bid=436/tid=13315868/tp=1/',
     notificationKind: 'history',
     newPosts: [
-      { num: 102, time: '2026/06/17 12:40', content: 'latest historical post' },
+      { num: 102, time: '2026/06/17 12:40', content: '最新の履歴投稿', contentZh: '最新的历史帖子' },
     ],
   });
 
   assert.equal(payload.title, 'Bakusai 13315868: latest 1 historical posts');
-  assert.match(payload.body, /latest historical post/);
+  assert.match(payload.body, /最新の履歴投稿\n最新的历史帖子/);
+});
+
+test('buildBarkPayload includes all 20 requested posts', () => {
+  const posts = Array.from({ length: 20 }, (_, index) => ({
+    num: index + 1,
+    time: '2026/06/17 12:40',
+    content: `原文 ${index + 1}`,
+    contentZh: `译文 ${index + 1}`,
+  }));
+
+  const payload = buildBarkPayload({
+    threadTitle: 'Bakusai 13315868',
+    threadUrl: 'https://bakusai.com/thr_res/acode=18/ctgid=103/bid=436/tid=13315868/tp=1/',
+    newPosts: posts,
+  });
+
+  assert.match(payload.body, /#20 2026\/06\/17 12:40/);
+  assert.match(payload.body, /原文 20\n译文 20/);
+  assert.doesNotMatch(payload.body, /\.\.\.and/);
+});
+
+test('translatePostsToChinese keeps Japanese first and Chinese translation next', async () => {
+  const translated = await translatePostsToChinese(
+    [{ num: 1, content: 'こんにちは' }],
+    {
+      fetchImpl: async () => ({
+        ok: true,
+        json: async () => ([[['你好', 'こんにちは']]]),
+      }),
+    },
+  );
+
+  assert.equal(translated[0].content, 'こんにちは');
+  assert.equal(translated[0].contentZh, '你好');
 });
 
 test('normalizeBarkEndpoint accepts a full Bark key URL without committing message text', () => {
