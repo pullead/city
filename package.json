@@ -1,0 +1,26 @@
+{
+  "name": "cityheaven-dto-bakusai-crawlers",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone CityHeaven, DTO.jp, and Bakusai crawlers with a local SQLite database.",
+  "type": "commonjs",
+  "scripts": {
+    "init-db": "node scripts/init-db.js",
+    "ch:reviews": "node scripts/scrape-cityheaven-v4.js",
+    "dto:shop": "node scripts/scrape-dto-shop.js",
+    "dto:reviews": "node scripts/scrape-dto-reviews.js",
+    "bakusai": "node scripts/scrape-bakusai.js",
+    "bakusai:bark": "node scripts/monitor-bakusai-bark.js",
+    "test": "node --test",
+    "smoke": "node scripts/init-db.js && node -c scripts/scrape-cityheaven-v4.js && node -c scripts/scrape-dto-shop.js && node -c scripts/scrape-dto-reviews.js && node -c scripts/scrape-bakusai.js && node -c scripts/monitor-bakusai-bark.js"
+  },
+  "dependencies": {
+    "cheerio": "^1.2.0",
+    "playwright": "^1.58.2",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^6.0.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
