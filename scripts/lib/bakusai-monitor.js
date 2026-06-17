@@ -470,25 +470,116 @@ function splitTelegramText(text, maxChars = DEFAULT_TELEGRAM_MESSAGE_CHAR_LIMIT)
   return chunks;
 }
 
+function stripQuoteMarkers(text) {
+  return String(text || '').replace(/>>\d+/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function buildThreadedPostTree(posts) {
+  const sortedPosts = [...(posts || [])].sort((a, b) => (a.num || 0) - (b.num || 0));
+  const byNum = new Map(sortedPosts.map(post => [post.num, { post, replies: [] }]));
+  const roots = [];
+
+  for (const post of sortedPosts) {
+    const node = byNum.get(post.num);
+    const parentNum = (post.quotes || []).find(num => byNum.has(num) && num !== post.num);
+    if (parentNum) {
+      byNum.get(parentNum).replies.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+
+  return roots;
+}
+
+function appendTelegramPostLines(lines, node, options = {}) {
+  const depth = options.depth || 0;
+  const maxPostChars = options.maxPostChars || 160;
+  const indent = depth > 0 ? `${'  '.repeat(depth)}↳ ` : '';
+  const post = node.post;
+  const quoteLabel = depth > 0 && (post.quotes || []).length > 0
+    ? ` 回复 #${post.quotes[0]}`
+    : '';
+  const jaContent = stripQuoteMarkers(post.content) || post.content;
+  const zhContent = stripQuoteMarkers(post.contentZh) || post.contentZh || '（中文翻译不可用）';
+
+  lines.push(`${indent}🧾 #${post.num}${quoteLabel} · ${parsePostTimeLabel(post.time)}`);
+  lines.push(`${indent}🇯🇵 原文：${truncate(jaContent, maxPostChars)}`);
+  lines.push(`${indent}🔵 中文：${truncate(zhContent, maxPostChars)}`);
+
+  for (const reply of node.replies.sort((a, b) => (a.post.num || 0) - (b.post.num || 0))) {
+    lines.push('');
+    appendTelegramPostLines(lines, reply, {
+      ...options,
+      depth: depth + 1,
+      maxPostChars: Math.max(70, maxPostChars - 30),
+    });
+  }
+}
+
+function buildTelegramBody({
+  newPosts,
+  notificationKind = 'new',
+  now,
+  timeZone = 'Asia/Tokyo',
+  dailySummaries = {},
+  maxPostChars = 160,
+  maxSummaryChars = 180,
+}) {
+  const buckets = getRecentDayBuckets({ now, timeZone });
+  const posts = selectRecentDayPosts(newPosts || [], { now, timeZone });
+  const postsByDate = new Map();
+  for (const post of posts) {
+    if (!postsByDate.has(post.dateKey)) postsByDate.set(post.dateKey, []);
+    postsByDate.get(post.dateKey).push(post);
+  }
+
+  const lines = [
+    notificationKind === 'history'
+      ? '📚 新着なし / 暂无新帖：直近4日分を再送します'
+      : '🆕 新着あり / 有新帖：直近4日分をまとめて送信します',
+    '',
+  ];
+
+  for (const bucket of buckets) {
+    const dayPosts = postsByDate.get(bucket.key) || [];
+    if (dayPosts.length === 0) continue;
+
+    lines.push(`📅 ${bucket.ja} / ${bucket.zh} ${bucket.key}`);
+    lines.push('━━━━━━━━━━━━');
+    const summary = dailySummaries[bucket.key] || {
+      ja: buildDailySummaryJa(dayPosts, bucket),
+      zh: '（中文摘要不可用）',
+    };
+    lines.push(`📝 まとめ：${truncate(summary.ja, maxSummaryChars)}`);
+    lines.push(`🔵 摘要：${truncate(summary.zh, maxSummaryChars)}`);
+    lines.push('');
+
+    const tree = buildThreadedPostTree(dayPosts);
+    tree.forEach((node, index) => {
+      if (index > 0) lines.push('');
+      appendTelegramPostLines(lines, node, { maxPostChars });
+    });
+    lines.push('');
+  }
+
+  return lines.join('\n').trim();
+}
+
 function buildTelegramMessages(options = {}) {
   const maxChars = options.maxMessageChars || DEFAULT_TELEGRAM_MESSAGE_CHAR_LIMIT;
-  const payloads = buildBarkPayloads({
-    ...options,
-    maxBodyChars: Math.max(500, maxChars - 300),
-    maxRequestBytes: Number.MAX_SAFE_INTEGER,
-  });
-  const messages = [];
-
-  for (const payload of payloads) {
-    const text = [
-      payload.title,
-      '',
-      payload.body,
-      '',
-      payload.url,
-    ].filter(line => line !== '').join('\n');
-    messages.push(...splitTelegramText(text, maxChars));
-  }
+  const posts = selectRecentDayPosts(options.newPosts || [], options);
+  const title = options.notificationKind === 'history'
+    ? `📚 ${options.threadTitle || DEFAULT_THREAD_TITLE}｜4日分まとめ｜${posts.length}件`
+    : `🆕 ${options.threadTitle || DEFAULT_THREAD_TITLE}｜4日分まとめ｜${posts.length}件`;
+  const text = [
+    title,
+    '',
+    buildTelegramBody(options),
+    '',
+    buildPageUrl(options.threadUrl || DEFAULT_THREAD_URL, 1),
+  ].filter(line => line !== '').join('\n');
+  const messages = splitTelegramText(text, maxChars);
 
   if (messages.length <= 1) return messages;
 
@@ -612,7 +703,9 @@ module.exports = {
   buildBarkPayloads,
   buildDailySummaries,
   buildPageUrl,
+  buildTelegramBody,
   buildTelegramMessages,
+  buildThreadedPostTree,
   jsonByteLength,
   createNotificationPlan,
   isWithinPushHours,

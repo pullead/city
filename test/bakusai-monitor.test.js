@@ -6,7 +6,9 @@ const {
   buildBarkPayloads,
   buildDailySummaries,
   buildPageUrl,
+  buildTelegramBody,
   buildTelegramMessages,
+  buildThreadedPostTree,
   createNotificationPlan,
   isWithinPushHours,
   jsonByteLength,
@@ -327,6 +329,40 @@ test('buildTelegramMessages splits messages under the Telegram character limit',
   assert.ok(messages.length > 1);
   assert.ok(messages.every(message => message.length <= 900));
   assert.match(messages[0], /^\[1\/\d+\]/);
+});
+
+test('buildTelegramBody labels Chinese text and nests replies under their parent post', () => {
+  const body = buildTelegramBody({
+    now: new Date('2026-06-17T03:00:00Z'),
+    newPosts: [
+      { num: 101, time: '2026/06/17 10:00', content: '親投稿です', contentZh: '这是主帖', quotes: [] },
+      { num: 102, time: '2026/06/17 10:10', content: '>>101 返信です', contentZh: '>>101 这是回复', quotes: [101] },
+      { num: 103, time: '2026/06/17 10:20', content: '別の親投稿', contentZh: '另一个主帖', quotes: [] },
+    ],
+    dailySummaries: {
+      '2026-06-17': {
+        ja: '返信関係があります。',
+        zh: '存在回复关系。',
+      },
+    },
+  });
+
+  assert.match(body, /🔵 摘要：存在回复关系。/);
+  assert.match(body, /🧾 #101 · 10:00[\s\S]*🔵 中文：这是主帖[\s\S]*↳ 🧾 #102 回复 #101 · 10:10[\s\S]*↳ 🔵 中文：这是回复[\s\S]*🧾 #103 · 10:20/);
+  assert.doesNotMatch(body, /中文：>>101/);
+});
+
+test('buildThreadedPostTree nests replies recursively by quoted post number', () => {
+  const tree = buildThreadedPostTree([
+    { num: 1, quotes: [] },
+    { num: 2, quotes: [1] },
+    { num: 3, quotes: [2] },
+    { num: 4, quotes: [99] },
+  ]);
+
+  assert.deepEqual(tree.map(node => node.post.num), [1, 4]);
+  assert.deepEqual(tree[0].replies.map(node => node.post.num), [2]);
+  assert.deepEqual(tree[0].replies[0].replies.map(node => node.post.num), [3]);
 });
 
 test('splitTelegramText keeps short text as one message and splits long text', () => {
