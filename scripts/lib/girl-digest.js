@@ -18,6 +18,7 @@ const UA_SP = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKi
 
 const GIRLS = [
   {
+    id: '36256910',
     name: '井上キキ',
     shop: 'むきたまご堺東店',
     profileUrl: 'https://www.cityheaven.net/osaka/A2702/A270203/mukitama_sakulan/girlid-36256910/?lo=1',
@@ -35,9 +36,11 @@ const GIRLS = [
     keywords: ['井上キキ', 'キキ', 'きき'],
   },
   {
+    id: '36454537',
     name: '清水あさひ',
     shop: '神戸妻',
     diaryUrl: 'https://www.cityheaven.net/hyogo/A2801/A280102/kobe-duma/girlid-36454537/diary/?lo=1#menus',
+    reviewsUrl: 'https://www.cityheaven.net/hyogo/A2801/A280102/kobe-duma/reviews/?girlid=36454537&lo=1',
     bakusaiUrls: [
       'https://bakusai.com/thr_res/acode=18/ctgid=103/bid=436/tid=13281329/',
     ],
@@ -47,10 +50,12 @@ const GIRLS = [
     keywords: ['清水あさひ', 'あさひ', 'アサヒ'],
   },
   {
+    id: '63862566',
     name: '渋谷りなの',
     shop: '神戸マダムロイヤル',
     profileUrl: 'https://www.cityheaven.net/hyogo/A2801/A280102/kobe_madam_royal/girlid-63862566',
     diaryUrl: 'https://www.cityheaven.net/hyogo/A2801/A280102/kobe_madam_royal/girlid-63862566/diary/?lo=1#menus',
+    reviewsUrl: 'https://www.cityheaven.net/hyogo/A2801/A280102/kobe_madam_royal/reviews/?girlid=63862566&lo=1',
     bakusaiUrls: [
       'https://bakusai.com/thr_tl/acode=18/ctgid=103/bid=436/',
       'https://bakusai.com/thr_tl/acode=18/ctgid=103/bid=239/',
@@ -78,6 +83,36 @@ function truncate(text, maxLength) {
   const value = cleanText(text);
   if (value.length <= maxLength) return value;
   return `${value.slice(0, maxLength - 3)}...`;
+}
+
+function splitTextByLength(text, maxLength) {
+  const value = cleanText(text);
+  if (!value) return [];
+  const limit = Math.max(1, maxLength);
+  const chunks = [];
+  let remaining = value;
+  while (remaining.length > limit) {
+    let splitAt = -1;
+    for (const marker of ['。', '！', '？', '!', '?', '、', '，', ' ']) {
+      const index = remaining.lastIndexOf(marker, limit);
+      if (index > Math.floor(limit * 0.45)) {
+        splitAt = index + marker.length;
+        break;
+      }
+    }
+    if (splitAt < 0) splitAt = limit;
+    chunks.push(remaining.slice(0, splitAt).trim());
+    remaining = remaining.slice(splitAt).trim();
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
+function appendTextBlock(lines, label, text, indent = '    ', maxLineChars = 900) {
+  const chunks = splitTextByLength(text, maxLineChars);
+  if (chunks.length === 0) return;
+  lines.push(`${indent}${label}`);
+  for (const chunk of chunks) lines.push(`${indent}  ${chunk}`);
 }
 
 function dateKeyInTokyo(date = new Date()) {
@@ -299,8 +334,8 @@ function parseDiaryDetail(html, pageUrl, base = {}) {
     title: truncate(title, 80),
     date: truncate(date, 30),
     dateKey: meta.dateKey || parseMonthDayDateKey(date || base.date),
-    snippet: truncate(body, 220),
-    body: truncate(body, 360),
+    snippet: truncate(body, 360),
+    body,
     imageUrls: [...new Set([...(base.imageUrls || []), ...imageUrls])]
       .filter(url => isDiaryMediaUrl(url) && mediaMatchesDiaryId(url, diaryId))
       .slice(0, 4),
@@ -324,7 +359,7 @@ async function collectMonthlyDiaries(girl, options = {}) {
   if (!girl.diaryUrl) return [];
   const now = options.now || new Date();
   const maxPages = options.maxPages || 4;
-  const maxDetails = options.maxDetails || 20;
+  const maxDetails = options.maxDetails || 60;
   const entries = [];
   const seenUrls = new Set();
   let nextUrl = girl.diaryUrl;
@@ -418,10 +453,15 @@ function extractScheduleFromDiaries(diaries, options = {}) {
   return rows.slice(0, 10);
 }
 
-function parseReviews(html, pageUrl, girl) {
+function isGirlScopedReviewUrl(pageUrl, girl) {
+  return Boolean(girl && girl.id && String(pageUrl || '').includes(`girlid=${girl.id}`));
+}
+
+function parseReviews(html, pageUrl, girl, options = {}) {
   const $ = cheerio.load(html || '');
   const reviews = [];
   const seen = new Set();
+  const requireGirlMatch = options.requireGirlMatch !== false;
   let reviewItems = $('li.review-item');
   if (reviewItems.length === 0) {
     reviewItems = $('[class*="review"]').filter((_, el) => {
@@ -433,7 +473,7 @@ function parseReviews(html, pageUrl, girl) {
   reviewItems.each((_, el) => {
     const item = $(el);
     const text = cleanText(item.text());
-    if (!text || !matchesGirl(text, girl)) return;
+    if (!text || (requireGirlMatch && !matchesGirl(text, girl))) return;
     const href = item.find('a[href*="/reviews/"]').first().attr('href') || '';
     const title = normalizeReviewTitle(cleanText(item.find('.review-item-title, [class*="title"]').first().text()) || '口コミ');
     const rating = cleanText(item.find('.total_rate, [class*="rate"]').first().text());
@@ -474,6 +514,13 @@ function isWithinDays(dateKey, days, now = new Date()) {
   return today - date >= 0 && today - date <= days * 86400000;
 }
 
+function pagedUrlWithQuery(startUrl, page) {
+  if (page <= 1) return startUrl;
+  const [base, query = ''] = String(startUrl || '').split('#')[0].split('?');
+  const url = `${base.replace(/\/+$/, '')}/${page}/`;
+  return query ? `${url}?${query}` : url;
+}
+
 async function collectWeeklyReviews(girl, options = {}) {
   if (!girl.reviewsUrl) return [];
   const now = options.now || new Date();
@@ -482,12 +529,12 @@ async function collectWeeklyReviews(girl, options = {}) {
   const seen = new Set();
 
   for (let page = 1; page <= maxPages; page++) {
-    const url = page === 1
-      ? girl.reviewsUrl
-      : `${girl.reviewsUrl.split('#')[0].split('?')[0].replace(/\/+$/, '')}/${page}/`;
+    const url = pagedUrlWithQuery(girl.reviewsUrl, page);
     try {
       const html = await fetchHtml(url, { ua: UA_PC });
-      for (const review of parseReviews(html, url, girl)) {
+      for (const review of parseReviews(html, url, girl, {
+        requireGirlMatch: !isGirlScopedReviewUrl(girl.reviewsUrl, girl),
+      })) {
         const key = `${review.title}|${review.comment.slice(0, 50)}`;
         if (seen.has(key)) continue;
         if (review.dateKey && !isWithinDays(review.dateKey, 7, now)) continue;
@@ -664,7 +711,7 @@ async function translateItems(items, fields) {
     for (const field of fields) {
       if (!next[field]) continue;
       try {
-        next[`${field}Zh`] = await translateTextJaToZh(next[field]);
+        next[`${field}Zh`] = await translateLongTextJaToZh(next[field]);
       } catch (_) {
         next[`${field}Zh`] = '';
       }
@@ -673,6 +720,16 @@ async function translateItems(items, fields) {
     translated.push(next);
   }
   return translated;
+}
+
+async function translateLongTextJaToZh(text, options = {}) {
+  const chunks = splitTextByLength(text, options.maxChars || 1200);
+  const translated = [];
+  for (const chunk of chunks) {
+    translated.push(await translateTextJaToZh(chunk, options));
+    await sleep(120);
+  }
+  return translated.join('');
 }
 
 async function collectGirlDigest(girl) {
@@ -706,7 +763,7 @@ async function collectGirlDigest(girl) {
       const monthlyDiaries = await collectMonthlyDiaries(girl);
       result.diarySchedule = extractScheduleFromDiaries(monthlyDiaries);
       const todayDiaries = monthlyDiaries.filter(diary => isTodayDate(diary.dateKey));
-      result.diaries = await translateItems(todayDiaries, ['title', 'snippet']);
+      result.diaries = await translateItems(todayDiaries, ['title', 'body']);
     }
   } catch (error) {
     result.warnings.push(`写メ日記取得失败: ${error.message}`);
@@ -758,8 +815,8 @@ function formatGirlSection(digest) {
   for (const diary of digest.diaries.length ? digest.diaries : [{ title: '暂无今天日记' }]) {
     lines.push(`  - ${diary.date ? `${diary.date} ` : ''}${diary.title}`);
     if (diary.titleZh) lines.push(`    🔵 ${truncate(diary.titleZh, 70)}`);
-    if (diary.snippet) lines.push(`    🇯🇵 ${truncate(diary.snippet, 70)}`);
-    if (diary.snippetZh) lines.push(`    🔵 ${truncate(diary.snippetZh, 70)}`);
+    appendTextBlock(lines, '🇯🇵 原文：', diary.body || diary.snippet, '    ');
+    appendTextBlock(lines, '🔵 中文：', diary.bodyZh || diary.snippetZh, '    ');
     if (diary.imageUrls && diary.imageUrls.length) {
       for (const imageUrl of diary.imageUrls.slice(0, 4)) lines.push(`    📷 ${imageUrl}`);
     }

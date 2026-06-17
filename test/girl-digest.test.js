@@ -69,11 +69,12 @@ test('parseDiaries extracts CityHeaven panel cards with cover images', () => {
 });
 
 test('parseDiaryDetail extracts diary body and media links', () => {
+  const longBody = '本日15:00から追加枠あります。'.repeat(30);
   const detail = parseDiaryDetail(`
     <title>写メ日記『追加枠のお知らせ』「井上キキ」(2026年6月17日13:00)：店</title>
     <h1>追加枠のお知らせ</h1>
     <time>06/17 13:00</time>
-    <article>井上キキ 店 みたよ マイガール 追加枠のお知らせ 6/17 13:00 本日15:00から追加枠あります。こちらの写メ日記もオススメ！ 別日記</article>
+    <article>井上キキ 店 みたよ マイガール 追加枠のお知らせ 6/17 13:00 ${longBody}こちらの写メ日記もオススメ！ 別日記</article>
     <img src="//img2.cityheaven.net/img/girls/k/shop/grdr0001_0815000000pc.jpg?imgopt=y">
     <video src="/movies/a.mp4"></video>
   `, 'https://www.cityheaven.net/shop/girlid-1/diary/pd-1/');
@@ -81,6 +82,7 @@ test('parseDiaryDetail extracts diary body and media links', () => {
   assert.equal(detail.title, '追加枠のお知らせ');
   assert.equal(detail.dateKey, '2026-06-17');
   assert.match(detail.body, /本日15:00から追加枠/);
+  assert.ok(detail.body.length > 360);
   assert.doesNotMatch(detail.body, /こちらの写メ日記/);
   assert.match(detail.imageUrls[0], /^https:\/\/img2\.cityheaven\.net\/img\/girls/);
   assert.match(detail.videoUrls[0], /\/movies\/a\.mp4$/);
@@ -123,6 +125,24 @@ test('parseReviews only keeps reviews matching the target girl', () => {
   assert.match(reviews[0].comment, /井上キキ/);
 });
 
+test('parseReviews keeps girl-scoped review pages even when the name is omitted', () => {
+  const reviews = parseReviews(`
+    <li class="review-item">
+      <span class="total_rate">4.9</span>
+      <span class="review-item-title">楽しかった</span>
+      <p class="review-item-post-date">掲載日：2026/06/17</p>
+      <p class="review-item-post">とても丁寧で楽しい時間でした。</p>
+      <a href="/hyogo/shop/reviews/rv-1/">詳細</a>
+    </li>
+  `, 'https://www.cityheaven.net/hyogo/shop/reviews/?girlid=36454537&lo=1', GIRLS[1], {
+    requireGirlMatch: false,
+  });
+
+  assert.equal(reviews.length, 1);
+  assert.equal(reviews[0].rating, '4.9');
+  assert.match(reviews[0].comment, /楽しい時間/);
+});
+
 test('extractScheduleFromDiaries builds schedule rows from monthly diary text', () => {
   const rows = extractScheduleFromDiaries([
     {
@@ -154,7 +174,7 @@ test('formatGirlSection creates readable grouped Telegram section', () => {
     profile: ['身長: 160cm'],
     reservation: ['06/17 10:00-18:00 予約受付中'],
     diarySchedule: [{ date: '2026-06-17', time: '15:00', detail: '追加枠あります' }],
-    diaries: [{ title: '今日の日記', titleZh: '今天的日记', snippet: '本文です', snippetZh: '正文', imageUrls: ['https://example.test/a.jpg'], videoUrls: ['https://example.test/a.mp4'] }],
+    diaries: [{ title: '今日の日記', titleZh: '今天的日记', body: '本文です'.repeat(20), bodyZh: '正文'.repeat(20), imageUrls: ['https://example.test/a.jpg'], videoUrls: ['https://example.test/a.mp4'] }],
     reviews: [{ title: '良かった', rating: '4.8', summary: '客人说很开心' }],
     bakusai: [{ num: 12, time: '2026/06/17 10:00', content: 'キキの話題', contentZh: '关于Kiki的话题' }],
     warnings: [],
@@ -164,6 +184,8 @@ test('formatGirlSection creates readable grouped Telegram section', () => {
   assert.match(section, /🗓 日记提取出勤表/);
   assert.match(section, /📅 官方预约页/);
   assert.match(section, /🔵 今天的日记/);
+  assert.match(section, /🇯🇵 原文：/);
+  assert.match(section, /🔵 中文：/);
   assert.match(section, /📷 https:\/\/example\.test\/a\.jpg/);
   assert.match(section, /🎬 https:\/\/example\.test\/a\.mp4/);
   assert.match(section, /客人大概说：客人说很开心/);
@@ -196,8 +218,8 @@ test('buildGirlsDigestMessage and splitGirlsDigestMessage support long combined 
       diaries: Array.from({ length: 3 }, (_, index) => ({
         title: `日記 ${index + 1}`,
         titleZh: `日记 ${index + 1}`,
-        snippet: '本文です'.repeat(30),
-        snippetZh: '这是正文'.repeat(30),
+        body: '本文です'.repeat(80),
+        bodyZh: '这是正文'.repeat(80),
       })),
       reviews: [],
       bakusai: Array.from({ length: 6 }, (_, index) => ({
