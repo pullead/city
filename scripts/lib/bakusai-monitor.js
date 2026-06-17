@@ -9,6 +9,13 @@ const DEFAULT_THREAD_ID = '13315868';
 const DEFAULT_THREAD_TITLE = 'Bakusai monitor';
 const DEFAULT_STATE_PATH = path.resolve(__dirname, '..', '..', '.crawler-state', 'bakusai-monitor.json');
 const DEFAULT_NOTIFICATION_POST_LIMIT = 20;
+const DEFAULT_DAY_WINDOW = 4;
+const DAY_LABELS = [
+  { ja: '今日', zh: '今天' },
+  { ja: '昨日', zh: '昨天' },
+  { ja: '一昨日', zh: '前天' },
+  { ja: '3日前', zh: '大前天' },
+];
 
 function decodeEntities(text) {
   return String(text || '')
@@ -71,20 +78,84 @@ function buildPageUrl(rawUrl, page) {
   return `${withoutPage}/p=${page}/`;
 }
 
+function pad2(value) {
+  return String(value).padStart(2, '0');
+}
+
+function formatDateKeyFromDate(date, timeZone = 'Asia/Tokyo') {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function shiftDateKey(dateKey, dayDelta) {
+  const date = new Date(`${dateKey}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + dayDelta);
+  return `${date.getUTCFullYear()}-${pad2(date.getUTCMonth() + 1)}-${pad2(date.getUTCDate())}`;
+}
+
+function getRecentDayBuckets(options = {}) {
+  const now = options.now || new Date();
+  const timeZone = options.timeZone || 'Asia/Tokyo';
+  const dayWindow = options.dayWindow || DEFAULT_DAY_WINDOW;
+  const todayKey = formatDateKeyFromDate(now, timeZone);
+
+  return Array.from({ length: dayWindow }, (_, index) => ({
+    key: shiftDateKey(todayKey, -index),
+    ...(DAY_LABELS[index] || { ja: `${index}日前`, zh: `${index}天前` }),
+    order: index,
+  }));
+}
+
+function parsePostDateKey(time, options = {}) {
+  const value = String(time || '');
+  const full = value.match(/(\d{4})[/-](\d{1,2})[/-](\d{1,2})/);
+  if (full) return `${full[1]}-${pad2(full[2])}-${pad2(full[3])}`;
+
+  const short = value.match(/(?:^|\D)(\d{1,2})[/-](\d{1,2})(?:\D|$)/);
+  if (!short) return '';
+
+  const currentYear = formatDateKeyFromDate(options.now || new Date(), options.timeZone || 'Asia/Tokyo').slice(0, 4);
+  return `${currentYear}-${pad2(short[1])}-${pad2(short[2])}`;
+}
+
+function parsePostTimeLabel(time) {
+  const match = String(time || '').match(/(\d{1,2}):(\d{2})/);
+  return match ? `${pad2(match[1])}:${match[2]}` : '--:--';
+}
+
+function selectRecentDayPosts(posts, options = {}) {
+  const buckets = getRecentDayBuckets(options);
+  const orderByDate = new Map(buckets.map(bucket => [bucket.key, bucket.order]));
+
+  return [...(posts || [])]
+    .map(post => ({ ...post, dateKey: parsePostDateKey(post.time, options) }))
+    .filter(post => orderByDate.has(post.dateKey))
+    .sort((a, b) => {
+      const dayOrder = orderByDate.get(a.dateKey) - orderByDate.get(b.dateKey);
+      if (dayOrder !== 0) return dayOrder;
+      return (a.num || 0) - (b.num || 0);
+    });
+}
+
 function createNotificationPlan(posts, previousState, options = {}) {
   const sortedPosts = [...(posts || [])].sort((a, b) => a.num - b.num);
+  const recentPosts = selectRecentDayPosts(sortedPosts, options);
   const maxPostNum = sortedPosts.reduce((max, post) => Math.max(max, post.num || 0), 0);
   const threadId = options.threadId || previousState?.threadId || DEFAULT_THREAD_ID;
   const now = options.now || new Date().toISOString();
-  const notificationPostLimit = options.notificationPostLimit || DEFAULT_NOTIFICATION_POST_LIMIT;
-  const historyPostLimit = options.historyPostLimit || notificationPostLimit;
   const historyPosts = options.notifyHistoryWhenNoNew
-    ? sortedPosts.slice(-historyPostLimit)
+    ? recentPosts
     : [];
 
   if (!previousState || !Number.isFinite(previousState.lastSeenPostNum)) {
-    const firstRunPosts = options.notifyOnFirstRun ? sortedPosts : [];
-    const notificationPosts = firstRunPosts.length > 0 ? firstRunPosts.slice(-notificationPostLimit) : historyPosts;
+    const firstRunPosts = options.notifyOnFirstRun ? recentPosts : [];
+    const notificationPosts = firstRunPosts.length > 0 ? firstRunPosts : historyPosts;
     const notificationKind = firstRunPosts.length > 0 ? 'new' : 'history';
     return {
       firstRun: true,
@@ -102,8 +173,8 @@ function createNotificationPlan(posts, previousState, options = {}) {
   }
 
   const lastSeen = previousState.lastSeenPostNum || 0;
-  const newPosts = sortedPosts.filter(post => post.num > lastSeen);
-  const notificationPosts = newPosts.length > 0 ? newPosts.slice(-notificationPostLimit) : historyPosts;
+  const newPosts = recentPosts.filter(post => post.num > lastSeen);
+  const notificationPosts = newPosts.length > 0 ? recentPosts : historyPosts;
   const notificationKind = newPosts.length > 0 ? 'new' : 'history';
 
   return {
@@ -128,24 +199,45 @@ function truncate(text, maxLength) {
   return `${value.slice(0, maxLength - 3)}...`;
 }
 
-function buildBarkPayload({ threadTitle, threadUrl, newPosts, notificationKind = 'new', postLimit = DEFAULT_NOTIFICATION_POST_LIMIT }) {
-  const posts = [...(newPosts || [])].sort((a, b) => b.num - a.num);
-  const visiblePosts = posts.slice(0, postLimit);
-  const lines = visiblePosts.map(post => {
-    const time = post.time ? ` ${post.time}` : '';
-    const ja = truncate(post.content, 120);
-    const zh = truncate(post.contentZh || '（中文翻译不可用）', 120);
-    return `#${post.num}${time}\n${ja}\n${zh}`;
-  });
-  if (posts.length > visiblePosts.length) {
-    lines.push(`...and ${posts.length - visiblePosts.length} more`);
+function buildBarkPayload({ threadTitle, threadUrl, newPosts, notificationKind = 'new', now, timeZone = 'Asia/Tokyo' }) {
+  const buckets = getRecentDayBuckets({ now, timeZone });
+  const posts = selectRecentDayPosts(newPosts || [], { now, timeZone });
+  const postsByDate = new Map();
+  for (const post of posts) {
+    if (!postsByDate.has(post.dateKey)) postsByDate.set(post.dateKey, []);
+    postsByDate.get(post.dateKey).push(post);
+  }
+
+  const lines = [
+    notificationKind === 'history'
+      ? '📚 新着なし / 暂无新帖：直近4日分を再送します'
+      : '🆕 新着あり / 有新帖：直近4日分をまとめて送信します',
+    '',
+  ];
+
+  for (const bucket of buckets) {
+    const dayPosts = postsByDate.get(bucket.key) || [];
+    lines.push(`📅 ${bucket.ja} / ${bucket.zh} ${bucket.key}`);
+    lines.push('━━━━━━━━━━━━');
+    if (dayPosts.length === 0) {
+      lines.push('投稿なし');
+      lines.push('无帖子');
+    } else {
+      dayPosts.forEach((post, index) => {
+        if (index > 0) lines.push('');
+        lines.push(`🧾 #${post.num} · ${parsePostTimeLabel(post.time)}`);
+        lines.push(truncate(post.content, 180));
+        lines.push(truncate(post.contentZh || '（中文翻译不可用）', 180));
+      });
+    }
+    lines.push('');
   }
 
   return {
     title: notificationKind === 'history'
-      ? `${threadTitle || DEFAULT_THREAD_TITLE}: latest ${posts.length} historical posts`
-      : `${threadTitle || DEFAULT_THREAD_TITLE}: ${posts.length} new posts`,
-    body: lines.join('\n\n'),
+      ? `📚 ${threadTitle || DEFAULT_THREAD_TITLE}｜4日分まとめ｜${posts.length}件`
+      : `🆕 ${threadTitle || DEFAULT_THREAD_TITLE}｜4日分まとめ｜${posts.length}件`,
+    body: lines.join('\n').trim(),
     url: buildPageUrl(threadUrl || DEFAULT_THREAD_URL, 1),
     group: 'bakusai-monitor',
   };

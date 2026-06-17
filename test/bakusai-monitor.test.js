@@ -46,11 +46,16 @@ test('parsePosts extracts Bakusai response numbers, authors, times, content, and
 test('createNotificationPlan initializes state without notifying on first run', () => {
   const plan = createNotificationPlan(
     [
-      { num: 101, content: 'old' },
-      { num: 102, content: 'latest' },
+      { num: 101, time: '2026/06/17 10:00', content: 'old' },
+      { num: 102, time: '2026/06/17 11:00', content: 'latest' },
     ],
     null,
-    { threadId: '13315868', notifyOnFirstRun: false },
+    {
+      threadId: '13315868',
+      notifyOnFirstRun: false,
+      notifyHistoryWhenNoNew: false,
+      now: new Date('2026-06-17T03:00:00Z'),
+    },
   );
 
   assert.equal(plan.shouldNotify, false);
@@ -62,32 +67,32 @@ test('createNotificationPlan initializes state without notifying on first run', 
 test('createNotificationPlan can notify recent history on first run', () => {
   const plan = createNotificationPlan(
     [
-      { num: 101, content: 'older' },
-      { num: 102, content: 'latest' },
+      { num: 101, time: '2026/06/17 10:00', content: 'older' },
+      { num: 102, time: '2026/06/17 11:00', content: 'latest' },
     ],
     null,
     {
       threadId: '13315868',
       notifyHistoryWhenNoNew: true,
-      historyPostLimit: 1,
+      now: new Date('2026-06-17T03:00:00Z'),
     },
   );
 
   assert.equal(plan.shouldNotify, true);
   assert.equal(plan.notificationKind, 'history');
-  assert.deepEqual(plan.notificationPosts.map(post => post.num), [102]);
+  assert.deepEqual(plan.notificationPosts.map(post => post.num), [101, 102]);
   assert.equal(plan.nextState.lastSeenPostNum, 102);
 });
 
 test('createNotificationPlan returns only posts newer than stored state', () => {
   const plan = createNotificationPlan(
     [
-      { num: 101, content: 'old' },
-      { num: 102, content: 'newer' },
-      { num: 103, content: 'newest' },
+      { num: 101, time: '2026/06/17 10:00', content: 'old' },
+      { num: 102, time: '2026/06/17 11:00', content: 'newer' },
+      { num: 103, time: '2026/06/17 12:00', content: 'newest' },
     ],
     { threadId: '13315868', lastSeenPostNum: 101 },
-    { threadId: '13315868', notifyOnFirstRun: false },
+    { threadId: '13315868', notifyOnFirstRun: false, now: new Date('2026-06-17T03:00:00Z') },
   );
 
   assert.equal(plan.shouldNotify, true);
@@ -95,78 +100,68 @@ test('createNotificationPlan returns only posts newer than stored state', () => 
   assert.equal(plan.nextState.lastSeenPostNum, 103);
 });
 
-test('createNotificationPlan limits new post notifications to the latest 20 posts', () => {
-  const posts = Array.from({ length: 25 }, (_, index) => ({
-    num: index + 1,
-    content: `post ${index + 1}`,
-  }));
-
+test('createNotificationPlan sends all posts from today through three days ago in date order', () => {
   const plan = createNotificationPlan(
-    posts,
-    { threadId: '13315868', lastSeenPostNum: 0 },
-    { threadId: '13315868' },
+    [
+      { num: 91, time: '2026/06/13 23:00', content: 'too old' },
+      { num: 101, time: '2026/06/17 10:00', content: 'today first' },
+      { num: 103, time: '2026/06/17 12:00', content: 'today second' },
+      { num: 95, time: '2026/06/16 09:00', content: 'yesterday' },
+      { num: 92, time: '2026/06/15 08:00', content: 'two days ago' },
+      { num: 90, time: '2026/06/14 07:00', content: 'three days ago' },
+    ],
+    { threadId: '13315868', lastSeenPostNum: 100 },
+    {
+      threadId: '13315868',
+      notifyHistoryWhenNoNew: true,
+      now: new Date('2026-06-17T03:00:00Z'),
+    },
   );
 
   assert.equal(plan.shouldNotify, true);
   assert.equal(plan.notificationKind, 'new');
-  assert.equal(plan.notificationPosts.length, 20);
-  assert.deepEqual(plan.notificationPosts.map(post => post.num), Array.from({ length: 20 }, (_, index) => index + 6));
+  assert.deepEqual(plan.newPosts.map(post => post.num), [101, 103]);
+  assert.deepEqual(plan.notificationPosts.map(post => post.num), [101, 103, 95, 92, 90]);
+  assert.equal(plan.nextState.lastSeenPostNum, 103);
 });
 
-test('createNotificationPlan can notify recent history when there are no new posts', () => {
+test('createNotificationPlan sends the same four-day window when there are no new posts', () => {
   const plan = createNotificationPlan(
     [
-      { num: 101, content: 'older' },
-      { num: 102, content: 'latest' },
+      { num: 101, time: '2026/06/17 10:00', content: 'today' },
+      { num: 95, time: '2026/06/16 09:00', content: 'yesterday' },
+      { num: 92, time: '2026/06/15 08:00', content: 'two days ago' },
+      { num: 90, time: '2026/06/14 07:00', content: 'three days ago' },
     ],
-    { threadId: '13315868', lastSeenPostNum: 102 },
+    { threadId: '13315868', lastSeenPostNum: 101 },
     {
       threadId: '13315868',
       notifyHistoryWhenNoNew: true,
-      historyPostLimit: 2,
+      now: new Date('2026-06-17T03:00:00Z'),
     },
   );
 
   assert.equal(plan.shouldNotify, true);
   assert.equal(plan.notificationKind, 'history');
   assert.deepEqual(plan.newPosts, []);
-  assert.deepEqual(plan.notificationPosts.map(post => post.num), [101, 102]);
-  assert.equal(plan.nextState.lastSeenPostNum, 102);
-});
-
-test('createNotificationPlan defaults historical notifications to the latest 20 posts', () => {
-  const posts = Array.from({ length: 25 }, (_, index) => ({
-    num: index + 1,
-    content: `post ${index + 1}`,
-  }));
-
-  const plan = createNotificationPlan(
-    posts,
-    { threadId: '13315868', lastSeenPostNum: 25 },
-    {
-      threadId: '13315868',
-      notifyHistoryWhenNoNew: true,
-    },
-  );
-
-  assert.equal(plan.shouldNotify, true);
-  assert.equal(plan.notificationKind, 'history');
-  assert.equal(plan.notificationPosts.length, 20);
-  assert.deepEqual(plan.notificationPosts.map(post => post.num), Array.from({ length: 20 }, (_, index) => index + 6));
+  assert.deepEqual(plan.notificationPosts.map(post => post.num), [101, 95, 92, 90]);
 });
 
 test('buildBarkPayload summarizes new posts and links to the monitored thread', () => {
   const payload = buildBarkPayload({
     threadTitle: 'Bakusai 監視',
     threadUrl: 'https://bakusai.com/thr_res/acode=18/ctgid=103/bid=436/tid=13315868/tp=1/',
+    now: new Date('2026-06-17T03:00:00Z'),
     newPosts: [
       { num: 102, time: '2026/06/17 12:40', content: 'a'.repeat(120), contentZh: '中文1' },
       { num: 103, time: '2026/06/17 12:45', content: '短い本文', contentZh: '简短正文' },
     ],
   });
 
-  assert.equal(payload.title, 'Bakusai 監視: 2 new posts');
-  assert.match(payload.body, /#103 2026\/06\/17 12:45/);
+  assert.equal(payload.title, '🆕 Bakusai 監視｜4日分まとめ｜2件');
+  assert.match(payload.body, /📅 今日 \/ 今天 2026-06-17/);
+  assert.match(payload.body, /🧾 #102 · 12:40/);
+  assert.match(payload.body, /🧾 #103 · 12:45/);
   assert.match(payload.body, /短い本文/);
   assert.match(payload.body, /简短正文/);
   assert.equal(payload.url, 'https://bakusai.com/thr_res/acode=18/ctgid=103/bid=436/tid=13315868/tp=1/');
@@ -178,31 +173,33 @@ test('buildBarkPayload labels historical posts differently from new posts', () =
     threadTitle: 'Bakusai 13315868',
     threadUrl: 'https://bakusai.com/thr_res/acode=18/ctgid=103/bid=436/tid=13315868/tp=1/',
     notificationKind: 'history',
+    now: new Date('2026-06-17T03:00:00Z'),
     newPosts: [
       { num: 102, time: '2026/06/17 12:40', content: '最新の履歴投稿', contentZh: '最新的历史帖子' },
     ],
   });
 
-  assert.equal(payload.title, 'Bakusai 13315868: latest 1 historical posts');
+  assert.equal(payload.title, '📚 Bakusai 13315868｜4日分まとめ｜1件');
   assert.match(payload.body, /最新の履歴投稿\n最新的历史帖子/);
 });
 
-test('buildBarkPayload includes all 20 requested posts', () => {
-  const posts = Array.from({ length: 20 }, (_, index) => ({
-    num: index + 1,
-    time: '2026/06/17 12:40',
-    content: `原文 ${index + 1}`,
-    contentZh: `译文 ${index + 1}`,
-  }));
-
+test('buildBarkPayload groups today yesterday two days ago and three days ago in order', () => {
   const payload = buildBarkPayload({
     threadTitle: 'Bakusai 13315868',
     threadUrl: 'https://bakusai.com/thr_res/acode=18/ctgid=103/bid=436/tid=13315868/tp=1/',
-    newPosts: posts,
+    now: new Date('2026-06-17T03:00:00Z'),
+    newPosts: [
+      { num: 101, time: '2026/06/17 10:00', content: 'today ja', contentZh: '今天中文' },
+      { num: 95, time: '2026/06/16 09:00', content: 'yesterday ja', contentZh: '昨天中文' },
+      { num: 92, time: '2026/06/15 08:00', content: 'two days ja', contentZh: '前天中文' },
+      { num: 90, time: '2026/06/14 07:00', content: 'three days ja', contentZh: '大前天中文' },
+    ],
   });
 
-  assert.match(payload.body, /#20 2026\/06\/17 12:40/);
-  assert.match(payload.body, /原文 20\n译文 20/);
+  assert.match(
+    payload.body,
+    /📅 今日 \/ 今天 2026-06-17[\s\S]*today ja\n今天中文[\s\S]*📅 昨日 \/ 昨天 2026-06-16[\s\S]*yesterday ja\n昨天中文[\s\S]*📅 一昨日 \/ 前天 2026-06-15[\s\S]*two days ja\n前天中文[\s\S]*📅 3日前 \/ 大前天 2026-06-14[\s\S]*three days ja\n大前天中文/,
+  );
   assert.doesNotMatch(payload.body, /\.\.\.and/);
 });
 

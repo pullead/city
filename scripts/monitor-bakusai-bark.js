@@ -57,11 +57,9 @@ async function main() {
   const threadId = process.env.BAKUSAI_THREAD_ID || DEFAULT_THREAD_ID;
   const threadTitle = process.env.BAKUSAI_THREAD_TITLE || DEFAULT_THREAD_TITLE;
   const statePath = process.env.BAKUSAI_STATE_PATH || DEFAULT_STATE_PATH;
-  const maxPages = envInt('BAKUSAI_MAX_PAGES', 1);
+  const maxPages = envInt('BAKUSAI_MAX_PAGES', 30);
   const notifyOnFirstRun = envFlag('BARK_NOTIFY_ON_FIRST_RUN', false);
   const notifyHistoryWhenNoNew = envFlag('BARK_NOTIFY_HISTORY_WHEN_NO_NEW', true);
-  const historyPostLimit = envInt('BARK_HISTORY_POST_LIMIT', 20);
-  const notificationPostLimit = envInt('BARK_NOTIFICATION_POST_LIMIT', 20);
   const translateToChinese = envFlag('BARK_TRANSLATE_TO_ZH', true);
 
   const posts = await fetchPosts(threadUrl, maxPages);
@@ -74,8 +72,6 @@ async function main() {
     threadId,
     notifyOnFirstRun,
     notifyHistoryWhenNoNew,
-    historyPostLimit,
-    notificationPostLimit,
   });
 
   console.log(`[bakusai] firstRun=${plan.firstRun} newPosts=${plan.newPosts.length} notificationKind=${plan.notificationKind} notificationPosts=${plan.notificationPosts.length} lastSeen=${plan.nextState.lastSeenPostNum}`);
@@ -89,7 +85,6 @@ async function main() {
       threadUrl,
       newPosts: notificationPosts,
       notificationKind: plan.notificationKind,
-      postLimit: notificationPostLimit,
     });
     await sendBarkNotification(process.env.BARK_API_URL, payload);
     console.log('[bark] notification sent');

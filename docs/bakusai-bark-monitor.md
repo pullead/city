@@ -18,7 +18,7 @@ https://api.day.app/<your-bark-key>
 
 The workflow reads that secret and sends one Bark notification on every run.
 
-When new Bakusai posts are found, the notification contains the latest 20 new posts. When there are no new posts, the notification contains the latest 20 historical posts from the thread.
+When new Bakusai posts are found, the notification contains all posts from today, yesterday, two days ago, and three days ago, in that order. When there are no new posts, the workflow still sends all posts from the same four-day window.
 
 Each post is formatted with the Japanese original first and the Chinese translation on the next line.
 
@@ -32,11 +32,10 @@ GitHub-hosted runners are temporary, so the workflow stores the last seen Bakusa
 
 The workflow stores the last seen response number so it can tell new posts from historical posts. It still sends historical posts when there is nothing new.
 
-The number of posts is controlled by these workflow environment variables:
+The workflow fetches enough pages to cover the four-day window:
 
 ```text
-BARK_HISTORY_POST_LIMIT: '20'
-BARK_NOTIFICATION_POST_LIMIT: '20'
+BAKUSAI_MAX_PAGES: '30'
 BARK_TRANSLATE_TO_ZH: 'true'
 ```
 
