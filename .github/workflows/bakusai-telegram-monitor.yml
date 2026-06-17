@@ -45,6 +45,16 @@ jobs:
           TG_ENFORCE_PUSH_HOURS: 'true'
           TG_MAX_MESSAGE_CHARS: '3500'
 
+      - name: Wait before girls digest
+        run: sleep 10
+
+      - name: Run Girls Telegram digest
+        run: npm run girls:tg
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TG_GIRLS_MAX_MESSAGE_CHARS: '3500'
+
       - name: Commit monitor state
         run: |
           git config user.name "github-actions[bot]"

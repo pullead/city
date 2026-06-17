@@ -12,8 +12,9 @@
     "bakusai": "node scripts/scrape-bakusai.js",
     "bakusai:bark": "node scripts/monitor-bakusai-bark.js",
     "bakusai:tg": "node scripts/monitor-bakusai-telegram.js",
+    "girls:tg": "node scripts/monitor-girls-telegram.js",
     "test": "node --test",
-    "smoke": "node scripts/init-db.js && node -c scripts/scrape-cityheaven-v4.js && node -c scripts/scrape-dto-shop.js && node -c scripts/scrape-dto-reviews.js && node -c scripts/scrape-bakusai.js && node -c scripts/monitor-bakusai-bark.js && node -c scripts/monitor-bakusai-telegram.js"
+    "smoke": "node scripts/init-db.js && node -c scripts/scrape-cityheaven-v4.js && node -c scripts/scrape-dto-shop.js && node -c scripts/scrape-dto-reviews.js && node -c scripts/scrape-bakusai.js && node -c scripts/monitor-bakusai-bark.js && node -c scripts/monitor-bakusai-telegram.js && node -c scripts/monitor-girls-telegram.js"
   },
   "dependencies": {
     "cheerio": "^1.2.0",
