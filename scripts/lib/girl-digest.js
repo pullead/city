@@ -22,7 +22,7 @@ const GIRLS = [
     shop: 'むきたまご堺東店',
     profileUrl: 'https://www.cityheaven.net/osaka/A2702/A270203/mukitama_sakulan/girlid-36256910/?lo=1',
     reservationUrl: 'https://www.cityheaven.net/osaka/A2702/A270203/mukitama_sakulan/S6ShopReservation/?girl_id=36256910&lo=1',
-    diaryUrl: 'https://www.cityheaven.net/osaka/A2702/A270203/mukitama_sakulan/girlid-36256910/diary/panel/',
+    diaryUrl: 'https://www.cityheaven.net/osaka/A2702/A270203/mukitama_sakulan/girlid-36256910/diary/?lo=1#menus',
     reviewsUrl: 'https://www.cityheaven.net/osaka/A2702/A270203/mukitama_sakulan/reviews/?girlid=36256910&lo=1',
     bakusaiUrls: [
       'https://bakusai.com/thr_res/acode=7/ctgid=103/bid=410/tid=12867698/ttgid=105/p=1/',
@@ -92,7 +92,7 @@ function dateKeyInTokyo(date = new Date()) {
 }
 
 function parseMonthDayDateKey(text, now = new Date()) {
-  const value = String(text || '');
+  const value = String(text || '').normalize('NFKC');
   const full = value.match(/(\d{4})[\/年.-](\d{1,2})[\/月.-](\d{1,2})/);
   if (full) return `${full[1]}-${String(full[2]).padStart(2, '0')}-${String(full[3]).padStart(2, '0')}`;
   const short = value.match(/(\d{1,2})[\/月.-](\d{1,2})/);
@@ -111,6 +111,7 @@ function isTodayDate(dateKey, now = new Date()) {
 function absoluteUrl(url, base = 'https://www.cityheaven.net') {
   if (!url) return '';
   if (url.startsWith('http')) return url;
+  if (url.startsWith('//')) return `https:${url}`;
   return new URL(url, base).toString();
 }
 
@@ -171,17 +172,19 @@ function parseDiaries(html, pageUrl, options = {}) {
   const limit = options.limit || 20;
   const now = options.now || new Date();
 
-  $('.diary_item, li[class*="diary"], article[class*="diary"], a[href*="/diary/pd-"]').each((_, el) => {
+  $('.girls-img-thumbnail, .diary_item, li[class*="diary"], article[class*="diary"], a[href*="/diary/pd-"]').each((_, el) => {
     const item = $(el);
     const linkEl = item.is('a') ? item : item.find('a[href*="/diary/pd-"]').first();
     const href = linkEl.attr('href') || '';
     if (href && !href.includes('/diary/pd-')) return;
     const url = absoluteUrl(href, pageUrl);
+    const girlName = item.find('.diary-name').first().text().trim();
     const title = cleanText(
-      item.find('.diary_title, .diary_headding, [class*="title"]').first().text()
+      item.find('.diary-title').first().text()
+      || item.find('.diary_title, .diary_headding, [class*="title"]').first().text()
       || linkEl.text()
       || item.text(),
-    );
+    ).replace(girlName, '').trim();
     const date = cleanText(item.find('.diary_time, time, [class*="date"], [class*="time"]').first().text());
     const snippet = cleanText(item.find('.diary_detail, [class*="text"], [class*="body"]').first().text());
     const key = `${title}|${url}`;
@@ -192,10 +195,12 @@ function parseDiaries(html, pageUrl, options = {}) {
     diaries.push({
       title: truncate(title, 80),
       date: truncate(date, 30),
-      dateKey: parseMonthDayDateKey(date, now),
+      dateKey: parseMonthDayDateKey(`${date} ${title}`, now),
       snippet: truncate(snippet, 180),
       url,
-      imageUrls: item.find('img').map((_, img) => absoluteUrl($(img).attr('src') || $(img).attr('data-src') || '', pageUrl)).get().filter(Boolean).slice(0, 3),
+      imageUrls: item.find('img').map((_, img) => absoluteUrl($(img).attr('data-src') || $(img).attr('src') || '', pageUrl)).get()
+        .filter(isDiaryMediaUrl)
+        .slice(0, 3),
       videoUrls: item.find('video source, video').map((_, video) => absoluteUrl($(video).attr('src') || '', pageUrl)).get().filter(Boolean).slice(0, 2),
     });
   });
@@ -213,29 +218,93 @@ function parseDiaryNextPage(html, pageUrl) {
   return absoluteUrl(href, pageUrl);
 }
 
+function parseDiaryPanelUrl(html, pageUrl) {
+  const $ = cheerio.load(html || '');
+  const href = $('a[href*="/diary/panel/"]').first().attr('href') || '';
+  return href ? absoluteUrl(href, pageUrl) : '';
+}
+
+function diaryPanelUrlFromDiaryUrl(url) {
+  const clean = String(url || '').split('#')[0].split('?')[0].replace(/\/+$/, '');
+  if (clean.includes('/diary/panel')) return `${clean}/`;
+  if (clean.endsWith('/diary')) return `${clean}/panel/`;
+  return url;
+}
+
+function parseDiaryMetaFromTitle(titleText) {
+  const value = String(titleText || '');
+  const match = value.match(/写メ日記『([^』]+)』[\s\S]*?\((\d{4})年(\d{1,2})月(\d{1,2})日(\d{1,2}):(\d{2})\)/);
+  if (!match) return {};
+  return {
+    title: match[1],
+    date: `${match[2]}/${String(match[3]).padStart(2, '0')}/${String(match[4]).padStart(2, '0')} ${String(match[5]).padStart(2, '0')}:${match[6]}`,
+    dateKey: `${match[2]}-${String(match[3]).padStart(2, '0')}-${String(match[4]).padStart(2, '0')}`,
+  };
+}
+
+function isDiaryMediaUrl(url) {
+  return Boolean(
+    url
+    && /\/img\/(girls|deco)\//i.test(url)
+    && /grdr|deco/i.test(url)
+    && !/dummy|logo|banner|icon|loading|btn_|btn|reserve|footBtn|gric|grpb|grpe/i.test(url)
+  );
+}
+
+function diaryIdFromUrl(url) {
+  const match = String(url || '').match(/\/diary\/pd-(\d+)/);
+  return match ? match[1] : '';
+}
+
+function mediaMatchesDiaryId(url, diaryId) {
+  if (!diaryId) return true;
+  const value = String(url || '');
+  return value.includes(diaryId) || value.includes(`0${diaryId}`);
+}
+
+function cleanDiaryBodyText(text, title, date) {
+  let value = cleanText(text);
+  const titleIndex = title ? value.indexOf(title) : -1;
+  if (titleIndex >= 0) value = value.slice(titleIndex + title.length);
+  const dateLabel = date ? date.replace(/^\d{4}\//, '').replace(/^0/, '') : '';
+  const dateIndex = dateLabel ? value.indexOf(dateLabel) : -1;
+  if (dateIndex >= 0) value = value.slice(dateIndex + dateLabel.length);
+  value = value
+    .replace(/^(みたよ|マイガール|キープ|ヨヤク|\s)+/g, '')
+    .split('こちらの写メ日記も')[0]
+    .split('この写メ日記を通報')[0]
+    .trim();
+  return value;
+}
+
 function parseDiaryDetail(html, pageUrl, base = {}) {
   const $ = cheerio.load(html || '');
   $('script, style, noscript, iframe, header, footer, nav').remove();
+  const diaryId = diaryIdFromUrl(pageUrl || base.url);
+  const meta = parseDiaryMetaFromTitle($('title').text());
   const rawTitle = cleanText($('h1, .diary_title, .diary_headding, [class*="title"]').first().text());
-  const title = rawTitle && !/^(新着通知|写メ日記|日記|詳細)$/i.test(rawTitle) ? rawTitle : (base.title || rawTitle || '');
-  const date = cleanText($('time, .diary_time, [class*="date"], [class*="time"]').first().text()) || base.date || '';
-  const body = cleanText($('.diary_detail, .diary_body, .diary_text, .diary_post, article, main').first().text()) || base.snippet || '';
-  const imageUrls = $('img').map((_, img) => absoluteUrl($(img).attr('src') || $(img).attr('data-src') || '', pageUrl)).get()
-    .filter(url => url && !/logo|banner|icon|loading|dummy|shlg|\/shop\/[a-z]\//i.test(url))
-    .slice(0, 2);
+  const title = meta.title || (rawTitle && !/^(新着通知|写メ日記|日記|詳細)$/i.test(rawTitle) ? rawTitle : (base.title || rawTitle || ''));
+  const date = meta.date || cleanText($('time, .diary_time, [class*="date"], [class*="time"]').first().text()) || base.date || '';
+  const rawBody = $('.girldiary_detail, .diary_detail, .diary_body, .diary_text, .diary_post, article, main').first().text();
+  const body = cleanDiaryBodyText(rawBody, title, date) || base.snippet || '';
+  const imageUrls = $('img').map((_, img) => absoluteUrl($(img).attr('data-src') || $(img).attr('src') || '', pageUrl)).get()
+    .filter(url => isDiaryMediaUrl(url) && mediaMatchesDiaryId(url, diaryId))
+    .slice(0, 4);
   const videoUrls = $('video source, video, a[href*=".mp4"], a[href*=".mov"], a[href*=".m3u8"]').map((_, video) => absoluteUrl($(video).attr('src') || $(video).attr('href') || '', pageUrl)).get()
     .filter(Boolean)
-    .slice(0, 1);
+    .slice(0, 2);
 
   return {
     ...base,
     title: truncate(title, 80),
     date: truncate(date, 30),
-    dateKey: parseMonthDayDateKey(date || base.date),
+    dateKey: meta.dateKey || parseMonthDayDateKey(date || base.date),
     snippet: truncate(body, 220),
     body: truncate(body, 360),
-    imageUrls: [...new Set([...(base.imageUrls || []), ...imageUrls])].filter(url => !/logo|banner|icon|loading|dummy|shlg|\/shop\/[a-z]\//i.test(url)).slice(0, 2),
-    videoUrls: [...new Set([...(base.videoUrls || []), ...videoUrls])].slice(0, 1),
+    imageUrls: [...new Set([...(base.imageUrls || []), ...imageUrls])]
+      .filter(url => isDiaryMediaUrl(url) && mediaMatchesDiaryId(url, diaryId))
+      .slice(0, 4),
+    videoUrls: [...new Set([...(base.videoUrls || []), ...videoUrls])].slice(0, 2),
     url: pageUrl || base.url,
   };
 }
@@ -261,7 +330,9 @@ async function collectMonthlyDiaries(girl, options = {}) {
   let nextUrl = girl.diaryUrl;
 
   for (let page = 1; page <= maxPages; page++) {
-    const urls = nextUrl ? [nextUrl] : diaryPageCandidates(girl.diaryUrl, page);
+    const urls = nextUrl
+      ? [nextUrl, diaryPanelUrlFromDiaryUrl(nextUrl)]
+      : diaryPageCandidates(girl.diaryUrl, page);
     let html = '';
     let pageUrl = '';
     for (const candidate of urls) {
@@ -275,7 +346,19 @@ async function collectMonthlyDiaries(girl, options = {}) {
     }
     if (!html) break;
 
-    const diaries = parseDiaries(html, pageUrl, { now, limit: 30 });
+    let diaries = parseDiaries(html, pageUrl, { now, limit: 30 });
+    if (diaries.length === 0) {
+      const panelUrl = parseDiaryPanelUrl(html, pageUrl);
+      if (panelUrl && panelUrl !== pageUrl) {
+        try {
+          html = await fetchHtml(panelUrl, { ua: UA_SP });
+          pageUrl = panelUrl;
+          diaries = parseDiaries(html, pageUrl, { now, limit: 30 });
+        } catch (_) {
+          // Keep the empty diary list and stop naturally below.
+        }
+      }
+    }
     for (const diary of diaries) {
       if (!diary.url || seenUrls.has(diary.url)) continue;
       if (diary.dateKey && !isCurrentMonthDate(diary.dateKey, now)) continue;
@@ -308,7 +391,7 @@ function extractScheduleFromDiaries(diaries, options = {}) {
   const now = options.now || new Date();
   const rows = [];
   const seen = new Set();
-  const schedulePattern = /(出勤|予約|空き|空枠|追加枠|受付|シフト|出勤表|予定|ご案内|満了|完売|休み|キャンセル|枠|\d{1,2}:\d{2}|\d{1,2}時)/;
+  const schedulePattern = /(出勤|予約|空き|空枠|追加枠|受付|シフト|出勤表|予定|ご案内|満了|完売|休み|キャンセル|枠)/;
   const datePattern = /(\d{1,2}[\/月.-]\d{1,2}(?:日)?|\d{1,2}日|\d{1,2}:\d{2}|\d{1,2}時(?:\d{1,2}分)?)/g;
 
   for (const diary of diaries || []) {
@@ -623,8 +706,7 @@ async function collectGirlDigest(girl) {
       const monthlyDiaries = await collectMonthlyDiaries(girl);
       result.diarySchedule = extractScheduleFromDiaries(monthlyDiaries);
       const todayDiaries = monthlyDiaries.filter(diary => isTodayDate(diary.dateKey));
-      const displayDiaries = todayDiaries.length > 0 ? todayDiaries : monthlyDiaries.slice(0, 3);
-      result.diaries = await translateItems(displayDiaries.slice(0, 3), ['title', 'snippet']);
+      result.diaries = await translateItems(todayDiaries, ['title', 'snippet']);
     }
   } catch (error) {
     result.warnings.push(`写メ日記取得失败: ${error.message}`);
@@ -672,14 +754,18 @@ function formatGirlSection(digest) {
     lines.push(`  - ${truncate(item, 90)}`);
   }
 
-  lines.push('📝 今日/最新写メ日記');
-  for (const diary of digest.diaries.length ? digest.diaries : [{ title: '暂无当天或当月日记' }]) {
+  lines.push('📝 今日写メ日記');
+  for (const diary of digest.diaries.length ? digest.diaries : [{ title: '暂无今天日记' }]) {
     lines.push(`  - ${diary.date ? `${diary.date} ` : ''}${diary.title}`);
     if (diary.titleZh) lines.push(`    🔵 ${truncate(diary.titleZh, 70)}`);
     if (diary.snippet) lines.push(`    🇯🇵 ${truncate(diary.snippet, 70)}`);
     if (diary.snippetZh) lines.push(`    🔵 ${truncate(diary.snippetZh, 70)}`);
-    if (diary.imageUrls && diary.imageUrls.length) lines.push(`    📷 ${diary.imageUrls[0]}`);
-    if (diary.videoUrls && diary.videoUrls.length) lines.push(`    🎬 ${diary.videoUrls[0]}`);
+    if (diary.imageUrls && diary.imageUrls.length) {
+      for (const imageUrl of diary.imageUrls.slice(0, 4)) lines.push(`    📷 ${imageUrl}`);
+    }
+    if (diary.videoUrls && diary.videoUrls.length) {
+      for (const videoUrl of diary.videoUrls.slice(0, 2)) lines.push(`    🎬 ${videoUrl}`);
+    }
   }
 
   if (girl.reviewsUrl) {
@@ -750,14 +836,14 @@ function splitGirlsDigestMessage(message, maxChars = 3500) {
       current = candidate;
       continue;
     }
-    if (current) chunks.push(current);
+    if (current) chunks.push(...splitTelegramText(current, maxChars));
     current = section;
     if (current.length > maxChars) {
       chunks.push(...splitTelegramText(current, maxChars));
       current = '';
     }
   }
-  if (current) chunks.push(current);
+  if (current) chunks.push(...splitTelegramText(current, maxChars));
   return chunks;
 }
 

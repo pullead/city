@@ -40,7 +40,7 @@ test('parseDiaries extracts latest diary cards', () => {
       <p class="diary_title">今日の日記</p>
       <p class="diary_time">06/17 12:00</p>
       <p class="diary_detail">本文の一部です</p>
-      <img src="/img/diary.jpg">
+      <img src="//img2.cityheaven.net/img/girls/k/shop/grdr0001_0815000000pc.jpg?imgopt=y">
     </div>
   `, 'https://www.cityheaven.net/osaka/shop/girlid-1/diary/');
 
@@ -48,22 +48,41 @@ test('parseDiaries extracts latest diary cards', () => {
   assert.equal(diaries[0].date, '06/17 12:00');
   assert.equal(diaries[0].dateKey, '2026-06-17');
   assert.equal(diaries[0].snippet, '本文の一部です');
-  assert.match(diaries[0].imageUrls[0], /\/img\/diary\.jpg$/);
+  assert.match(diaries[0].imageUrls[0], /^https:\/\/img2\.cityheaven\.net\/img\/girls/);
   assert.match(diaries[0].url, /^https:\/\/www\.cityheaven\.net/);
+});
+
+test('parseDiaries extracts CityHeaven panel cards with cover images', () => {
+  const diaries = parseDiaries(`
+    <div class="girls-img-thumbnail" data-diaryid="815281781">
+      <a class="diary_innr_link" href="/hyogo/shop/girlid-1/diary/pd-815281781/?link=girllist">
+        <img class="diary-img" data-src="//img2.cityheaven.net/img/girls/kh/shop/grdr0001.jpg?imgopt=y" src="//img2.cityheaven.net/img/icon/dummy.png">
+        <div class="diary-name">渋谷りなの</div>
+        <div class="diary-title">６.１７👨🏻ありがとう🩷</div>
+      </a>
+    </div>
+  `, 'https://www.cityheaven.net/hyogo/shop/girlid-1/diary/panel/', { now: new Date('2026-06-17T03:00:00Z') });
+
+  assert.equal(diaries[0].title, '６.１７👨🏻ありがとう🩷');
+  assert.equal(diaries[0].dateKey, '2026-06-17');
+  assert.match(diaries[0].imageUrls[0], /^https:\/\/img2\.cityheaven\.net\/img\/girls/);
 });
 
 test('parseDiaryDetail extracts diary body and media links', () => {
   const detail = parseDiaryDetail(`
+    <title>写メ日記『追加枠のお知らせ』「井上キキ」(2026年6月17日13:00)：店</title>
     <h1>追加枠のお知らせ</h1>
     <time>06/17 13:00</time>
-    <article>本日15:00から追加枠あります。</article>
-    <img src="/photos/a.jpg">
+    <article>井上キキ 店 みたよ マイガール 追加枠のお知らせ 6/17 13:00 本日15:00から追加枠あります。こちらの写メ日記もオススメ！ 別日記</article>
+    <img src="//img2.cityheaven.net/img/girls/k/shop/grdr0001_0815000000pc.jpg?imgopt=y">
     <video src="/movies/a.mp4"></video>
   `, 'https://www.cityheaven.net/shop/girlid-1/diary/pd-1/');
 
   assert.equal(detail.title, '追加枠のお知らせ');
-  assert.match(detail.body, /追加枠/);
-  assert.match(detail.imageUrls[0], /\/photos\/a\.jpg$/);
+  assert.equal(detail.dateKey, '2026-06-17');
+  assert.match(detail.body, /本日15:00から追加枠/);
+  assert.doesNotMatch(detail.body, /こちらの写メ日記/);
+  assert.match(detail.imageUrls[0], /^https:\/\/img2\.cityheaven\.net\/img\/girls/);
   assert.match(detail.videoUrls[0], /\/movies\/a\.mp4$/);
 });
 
